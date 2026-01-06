@@ -207,6 +207,17 @@ def _refresh_task_status(task):
     task_id = task.get("id")
     pid = task.get("pid")
     if not _is_process_alive(pid):
+        proc = None
+        keyword = (task.get("keyword") or "").strip()
+        if keyword:
+            for item in _list_crawler_processes():
+                if item.get("keyword") == keyword:
+                    proc = item
+                    break
+        if proc:
+            update_task(task_id, {"pid": proc.get("pid")})
+            task["pid"] = proc.get("pid")
+            return task
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         update_task(task_id, {"status": "stopped", "finished_at": now, "pid": ""})
         append_task_log(task_id, "任务状态修复：进程不存在，标记为已停止")

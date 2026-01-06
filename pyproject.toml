@@ -20,6 +20,7 @@ dependencies = [
     "opencv-python>=4.11.0.86",
     "pandas==2.2.3",
     "parsel==1.9.1",
+    "baidu-aip>=4.16.13",
     "pillow==9.5.0",
     "playwright==1.45.0",
     "pydantic==2.5.2",

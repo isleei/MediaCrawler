@@ -278,6 +278,17 @@ class WeiboContentHotword(Base):
     weight = Column(Integer)
 
 
+class WebExtraction(Base):
+    __tablename__ = "web_extraction"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    content_id = Column(String(255), index=True)
+    prop = Column(Text)
+    adj = Column(Text)
+    abstract = Column(Text)
+    sentiment = Column(Integer)
+
+
 class WeiboPinglun(Base):
     __tablename__ = "web_weibopinglun"
 

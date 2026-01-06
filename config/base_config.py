@@ -17,6 +17,8 @@
 # 详细许可条款请参阅项目根目录下的LICENSE文件。
 # 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
+import os
+
 # 基础配置
 PLATFORM = "xhs"  # 平台，xhs | dy | ks | bili | wb | tieba | zhihu
 KEYWORDS = "编程副业,编程兼职"  # 关键词搜索配置，以英文逗号分隔
@@ -92,7 +94,7 @@ ENABLE_GET_MEIDAS = False
 ENABLE_GET_COMMENTS = True
 
 # 爬取一级评论的数量控制(单视频/帖子)
-CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 10
+CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = 300
 
 # 是否开启爬二级评论模式, 默认不开启爬二级评论
 # 老版本项目使用了 db, 则需参考 schema/tables.sql line 287 增加表字段
@@ -121,6 +123,31 @@ SENTI_DIR_PATH = "./data/sentiment"
 SENTI_USE_REDIS = True
 SENTI_REDIS_PREFIX = "weibo:senti:"
 SENTI_CACHE_TTL = 60
+
+# 典型意见抽取（web_extraction）
+WEIBO_EXTRACTION_ENABLED = os.getenv("WEIBO_EXTRACTION_ENABLED", "0") in (
+    "1",
+    "true",
+    "True",
+)
+WEIBO_EXTRACTION_TYPE = os.getenv("WEIBO_EXTRACTION_TYPE", "5")  # 1 酒店 5 旅游
+WEIBO_EXTRACTION_INVALID = ["轉發微博", "轉發微博。", "转发微博", "转发微博。"]
+WEIBO_EXTRACTION_NOUNS = [
+    "PER",
+    "LOC",
+    "ORG",
+    "vn",
+    "n",
+    "f",
+    "s",
+    "nr",
+    "ns",
+    "nt",
+    "nw",
+    "nz",
+    "an",
+    "v",
+]
 
 # 中文字体文件路径
 FONT_PATH = "./docs/STZHONGS.TTF"

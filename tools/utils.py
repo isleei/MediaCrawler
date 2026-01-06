@@ -28,11 +28,29 @@ from .time_util import *
 
 def init_loging_config():
     level = logging.INFO
+
+    # Create a stream handler with immediate flush
+    handler = logging.StreamHandler()
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(name)s %(levelname)s (%(filename)s:%(lineno)d) - %(message)s",
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+
+    # Force flush after each log message
+    class FlushingStreamHandler(logging.StreamHandler):
+        def emit(self, record):
+            super().emit(record)
+            self.flush()
+
+    # Configure root logger
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(name)s %(levelname)s (%(filename)s:%(lineno)d) - %(message)s",
-        datefmt='%Y-%m-%d %H:%M:%S'
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[FlushingStreamHandler()]
     )
+
     _logger = logging.getLogger("MediaCrawler")
     _logger.setLevel(level)
 

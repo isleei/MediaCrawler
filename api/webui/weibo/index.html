@@ -294,7 +294,7 @@
         <div id="monitor-tab" class="tab-content hidden">
             <div class="bg-white rounded-lg shadow p-6 mb-6">
                 <h2 class="text-xl font-semibold mb-4">后台任务（MonitorSpider）</h2>
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                <div class="grid grid-cols-1 md:grid-cols-6 gap-4 items-end">
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-2">数据源类型</label>
                         <select id="monitor-type"
@@ -312,6 +312,16 @@
                             <option value="5">小红书（5）</option>
                         </select>
                     </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">每页数量</label>
+                        <input type="number" id="monitor-page-size" value="50" min="1" max="200"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">页码</label>
+                        <input type="number" id="monitor-page" value="1" min="1"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
                     <button onclick="loadMonitorTasks()"
                         class="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-200 transition-colors font-medium">
                         🔄 刷新
@@ -320,6 +330,19 @@
             </div>
             <div class="bg-white rounded-lg shadow p-6">
                 <h2 class="text-xl font-semibold mb-4">任务列表</h2>
+                <div class="flex items-center justify-between mb-4">
+                    <div class="text-sm text-gray-500" id="monitor-pagination-info"></div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="changeMonitorPage(-1)"
+                            class="bg-gray-100 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-200 text-sm">
+                            上一页
+                        </button>
+                        <button onclick="changeMonitorPage(1)"
+                            class="bg-gray-100 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-200 text-sm">
+                            下一页
+                        </button>
+                    </div>
+                </div>
                 <div class="overflow-x-auto">
                     <table class="w-full" id="monitor-tasks-table">
                         <thead>
@@ -1083,7 +1106,9 @@
 
         async function loadMonitorTasks() {
             const type = document.getElementById('monitor-type').value;
-            const response = await apiFetch(`/monitor/tasks?ms_types=${encodeURIComponent(type)}`);
+            const pageSize = Number(document.getElementById('monitor-page-size').value) || 50;
+            const page = Number(document.getElementById('monitor-page').value) || 1;
+            const response = await apiFetch(`/monitor/tasks?ms_types=${encodeURIComponent(type)}&page=${page}&page_size=${pageSize}`);
             if (!response.ok) {
                 showToast('加载后台任务失败', 'error');
                 return;
@@ -1092,6 +1117,14 @@
             const tasks = data.tasks || [];
             const tbody = document.getElementById('monitor-tasks-body');
             const empty = document.getElementById('no-monitor-tasks');
+            const info = document.getElementById('monitor-pagination-info');
+            const total = Number(data.total || 0);
+            const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+            const safePage = Math.min(Math.max(page, 1), totalPages);
+            if (safePage !== page) {
+                document.getElementById('monitor-page').value = String(safePage);
+            }
+            info.textContent = `共 ${total} 条，第 ${safePage}/${totalPages} 页`;
             if (tasks.length === 0) {
                 tbody.innerHTML = '';
                 empty.classList.remove('hidden');
@@ -1112,6 +1145,14 @@
                     </td>
                 </tr>
             `).join('');
+        }
+
+        function changeMonitorPage(delta) {
+            const pageInput = document.getElementById('monitor-page');
+            const current = Number(pageInput.value) || 1;
+            const nextPage = Math.max(1, current + delta);
+            pageInput.value = String(nextPage);
+            loadMonitorTasks();
         }
 
         async function loadProcesses() {

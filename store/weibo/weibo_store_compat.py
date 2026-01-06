@@ -20,6 +20,7 @@ import asyncio
 import json
 import os
 import re
+import socket
 from datetime import datetime
 from urllib import request as urlrequest
 from urllib.error import HTTPError, URLError
@@ -31,6 +32,7 @@ from sqlalchemy.orm import sessionmaker
 import config
 from base.base_crawler import AbstractStore
 from database.models import (
+    WebExtraction,
     WeiboContent,
     WeiboContentHotword,
     WeiboPinglun,
@@ -48,12 +50,18 @@ class WeiboCompatStoreImplement(AbstractStore):
         super().__init__(**kwargs)
         self._non_word = re.compile(r"[^\u4e00-\u9fa5a-zA-Z]")
         self._html = re.compile(r"<[^>]+>")
+        self._extraction_html = re.compile(
+            r"<[^>]+>|http://t.cn/(\w+)|\[.+\]|#[^#]+#|\u0040.*\u97f3\u4e50"
+        )
         self._stopwords = None
         self._engine = None
         self._session_factory = None
         self._es_base = None
         self._es_enabled = os.getenv("ES_ENABLED", "1") in ("1", "true", "True")
+        self._extraction_client = None
+        self._extraction_ready = False
         self._init_db()
+        self._init_extraction_client()
         self._init_es()
 
     async def store_content(self, content_item: dict):
@@ -99,6 +107,23 @@ class WeiboCompatStoreImplement(AbstractStore):
         self._ensure_index(os.getenv("ES_INDEX_WEIBO", "weibocontent"), _weibocontent_mappings)
         self._ensure_index(os.getenv("ES_INDEX_PINGLUN", "weibopinglun"), _weibopinglun_mappings)
 
+    def _init_extraction_client(self):
+        if not config.WEIBO_EXTRACTION_ENABLED:
+            return
+        try:
+            from aip import AipNlp
+        except Exception as exc:
+            utils.logger.warning("[store.weibo.extraction] import aip failed: %s", exc)
+            return
+        app_id = os.getenv("BAIDU_APP_ID", "").strip()
+        api_key = os.getenv("BAIDU_API_KEY", "").strip()
+        secret_key = os.getenv("BAIDU_SECRET_KEY", "").strip()
+        if not (app_id and api_key and secret_key):
+            utils.logger.warning("[store.weibo.extraction] missing BAIDU_APP_ID/API_KEY/SECRET_KEY")
+            return
+        self._extraction_client = AipNlp(app_id, api_key, secret_key)
+        self._extraction_ready = True
+
     def _store_content_sync(self, content_item: dict):
         content_id = self._build_content_id(content_item.get("note_id"))
         if not content_id:
@@ -126,15 +151,29 @@ class WeiboCompatStoreImplement(AbstractStore):
         }
         hotwords = self._extract_hotwords(payload["content_text"])
         if not self._session_factory:
+            utils.logger.warning("[WeiboCompatStore] Session factory not initialized")
             return
         session = self._session_factory()
         try:
             existing = session.get(WeiboContent, content_id)
             if existing:
+                # Check if there are actual changes
+                has_changes = False
+                for key, value in payload.items():
+                    if getattr(existing, key, None) != value:
+                        has_changes = True
+                        break
+
                 for key, value in payload.items():
                     setattr(existing, key, value)
+
+                if has_changes:
+                    utils.logger.info(f"[WeiboCompatStore] Updated content: {content_id} (有数据变化)")
+                else:
+                    utils.logger.info(f"[WeiboCompatStore] Updated content: {content_id} (无数据变化，仅刷新时间戳)")
             else:
                 session.add(WeiboContent(**payload))
+                utils.logger.info(f"[WeiboCompatStore] Inserted new content: {content_id} ✨")
 
             session.query(WeiboContentHotword).filter(
                 WeiboContentHotword.content_id == content_id
@@ -150,13 +189,17 @@ class WeiboCompatStoreImplement(AbstractStore):
                         for item in hotwords
                     ]
                 )
+                utils.logger.debug(f"[WeiboCompatStore] Saved {len(hotwords)} hotwords for {content_id}")
             session.commit()
-        except Exception:
+            utils.logger.info(f"[WeiboCompatStore] Successfully committed content: {content_id}")
+        except Exception as e:
             session.rollback()
+            utils.logger.error(f"[WeiboCompatStore] Failed to store content {content_id}: {e}")
             raise
         finally:
             session.close()
 
+        self._save_extraction(content_item, payload["content_text"])
         self._es_index(
             os.getenv("ES_INDEX_WEIBO", "weibocontent"),
             content_id,
@@ -177,6 +220,75 @@ class WeiboCompatStoreImplement(AbstractStore):
                 "hotwords": hotwords,
             },
         )
+
+    def _save_extraction(self, content_item: dict, content_text: str):
+        if not self._extraction_ready or not self._extraction_client or not self._session_factory:
+            return
+        if not content_text:
+            return
+        text = self._extraction_html.sub("", content_text)
+        if not text or text in config.WEIBO_EXTRACTION_INVALID:
+            return
+        content_id = self._build_content_id(content_item.get("note_id"))
+        if not content_id:
+            return
+        session = self._session_factory()
+        try:
+            exists = (
+                session.query(WebExtraction.id)
+                .filter(WebExtraction.content_id == content_id)
+                .first()
+            )
+            if exists:
+                return
+            options = {"type": config.WEIBO_EXTRACTION_TYPE}
+            result = self._extraction_client.commentTag(text, options)
+            items = result.get("items") if isinstance(result, dict) else None
+            if not items:
+                return
+            for item in items:
+                abstract = item.get("abstract", "")
+                if not abstract:
+                    continue
+                existing = (
+                    session.query(WebExtraction.id)
+                    .filter(
+                        WebExtraction.content_id == content_id,
+                        WebExtraction.abstract == abstract,
+                    )
+                    .first()
+                )
+                if existing:
+                    continue
+                prop = item.get("prop", "")
+                adj = item.get("adj", "")
+                if prop and not adj:
+                    try:
+                        lexer = self._extraction_client.lexer(prop)
+                        for lex in lexer.get("items", []):
+                            if (lex.get("pos") in config.WEIBO_EXTRACTION_NOUNS) or (
+                                lex.get("ne") in config.WEIBO_EXTRACTION_NOUNS
+                            ):
+                                prop = lex.get("item", prop)
+                            elif lex.get("pos") == "a":
+                                adj = lex.get("item", adj)
+                    except Exception as exc:
+                        utils.logger.warning("[store.weibo.extraction] lexer failed: %s", exc)
+                session.add(
+                    WebExtraction(
+                        content_id=content_id,
+                        prop=prop,
+                        adj=adj,
+                        abstract=abstract,
+                        sentiment=item.get("sentiment"),
+                    )
+                )
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            utils.logger.warning("[store.weibo.extraction] save failed: %s", exc)
+        finally:
+            session.close()
 
     def _store_comment_sync(self, comment_item: dict):
         note_id = comment_item.get("note_id")
@@ -206,15 +318,29 @@ class WeiboCompatStoreImplement(AbstractStore):
         }
         hotwords = self._extract_hotwords(payload["pinglun_text"])
         if not self._session_factory:
+            utils.logger.warning("[WeiboCompatStore] Session factory not initialized")
             return
         session = self._session_factory()
         try:
             existing = session.get(WeiboPinglun, pinglun_id)
             if existing:
+                # Check if there are actual changes
+                has_changes = False
+                for key, value in payload.items():
+                    if getattr(existing, key, None) != value:
+                        has_changes = True
+                        break
+
                 for key, value in payload.items():
                     setattr(existing, key, value)
+
+                if has_changes:
+                    utils.logger.info(f"[WeiboCompatStore] Updated comment: {pinglun_id} (有数据变化)")
+                else:
+                    utils.logger.info(f"[WeiboCompatStore] Updated comment: {pinglun_id} (无数据变化，仅刷新时间戳)")
             else:
                 session.add(WeiboPinglun(**payload))
+                utils.logger.info(f"[WeiboCompatStore] Inserted new comment: {pinglun_id} ✨")
 
             session.query(WeiboPinglunHotword).filter(
                 WeiboPinglunHotword.pinglun_id == pinglun_id
@@ -230,9 +356,12 @@ class WeiboCompatStoreImplement(AbstractStore):
                         for item in hotwords
                     ]
                 )
+                utils.logger.debug(f"[WeiboCompatStore] Saved {len(hotwords)} hotwords for comment {pinglun_id}")
             session.commit()
-        except Exception:
+            utils.logger.info(f"[WeiboCompatStore] Successfully committed comment: {pinglun_id}")
+        except Exception as e:
             session.rollback()
+            utils.logger.error(f"[WeiboCompatStore] Failed to store comment {pinglun_id}: {e}")
             raise
         finally:
             session.close()
@@ -324,14 +453,15 @@ class WeiboCompatStoreImplement(AbstractStore):
         stopwords = self._load_stopwords()
         tokens = [self._non_word.sub("", t) for t in jieba.lcut(content, cut_all=False)]
         tokens = [t for t in tokens if t]
-        results = []
-        for token in set(tokens):
-            if self._is_stop_word(token, stopwords):
+        token_counts = {}
+        for token in tokens:
+            normalized = token if self._contains_chinese(token) else token.lower()
+            if self._is_stop_word(normalized, stopwords):
                 continue
-            if self._is_emoji(token):
+            if self._is_emoji(normalized):
                 continue
-            weight = tokens.count(token)
-            results.append({"word": token, "weight": weight})
+            token_counts[normalized] = token_counts.get(normalized, 0) + 1
+        results = [{"word": word, "weight": weight} for word, weight in token_counts.items()]
         results.sort(key=lambda x: x["weight"], reverse=True)
         return [item for item in results if item["weight"] >= config.HOTWORDS_MIN_COUNT][
             : config.HOTWORDS_TOP_N
@@ -414,6 +544,6 @@ class WeiboCompatStoreImplement(AbstractStore):
                 body[:200] if body else b"",
             )
             return e.code, body
-        except URLError as exc:
+        except (TimeoutError, socket.timeout, URLError) as exc:
             utils.logger.warning("[store.weibo.es] request error url=%s error=%s", url, exc)
             return 0, b""
