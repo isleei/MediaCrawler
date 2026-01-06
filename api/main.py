@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from .routers import crawler_router, data_router, websocket_router
+from .routers.weibo_ui import router as weibo_ui_router
 
 app = FastAPI(
     title="MediaCrawler WebUI API",
@@ -59,6 +60,7 @@ app.add_middleware(
 app.include_router(crawler_router, prefix="/api")
 app.include_router(data_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
+app.include_router(weibo_ui_router)
 
 
 @app.get("/")
@@ -72,6 +74,18 @@ async def serve_frontend():
         "version": "1.0.0",
         "docs": "/docs",
         "note": "WebUI not found, please build it first: cd webui && npm run build"
+    }
+
+
+@app.get("/weibo")
+async def serve_weibo_ui():
+    """Return Weibo UI page"""
+    index_path = os.path.join(WEBUI_DIR, "weibo", "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {
+        "message": "Weibo UI not found",
+        "note": "Expected file at api/webui/weibo/index.html",
     }
 
 
@@ -165,6 +179,7 @@ async def get_config_options():
             {"value": "sqlite", "label": "SQLite Database"},
             {"value": "db", "label": "MySQL Database"},
             {"value": "mongodb", "label": "MongoDB Database"},
+            {"value": "compat", "label": "Legacy Weibo Storage"},
         ],
     }
 

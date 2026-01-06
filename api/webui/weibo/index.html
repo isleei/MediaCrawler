@@ -1,0 +1,1281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>微博搜索爬虫管理</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- 页头 -->
+        <header class="mb-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">🕷️ 微博搜索爬虫管理</h1>
+            <p class="text-gray-600">管理爬虫任务和 Cookies 配置</p>
+        </header>
+
+        <!-- 标签页导航 -->
+        <div class="mb-6">
+            <div class="flex border-b border-gray-200">
+                <button onclick="switchTab('tasks')" id="tab-tasks" class="tab-btn px-6 py-3 text-sm font-medium text-blue-600 border-b-2 border-blue-600">
+                    📋 爬虫任务
+                </button>
+                <button onclick="switchTab('cookies')" id="tab-cookies" class="tab-btn px-6 py-3 text-sm font-medium text-gray-500 hover:text-gray-700">
+                    🍪 Cookie 管理
+                </button>
+                <button onclick="switchTab('sentiment')" id="tab-sentiment" class="tab-btn px-6 py-3 text-sm font-medium text-gray-500 hover:text-gray-700">
+                    🧠 词典
+                </button>
+                <button onclick="switchTab('monitor')" id="tab-monitor" class="tab-btn px-6 py-3 text-sm font-medium text-gray-500 hover:text-gray-700">
+                    🗂️ 后台任务
+                </button>
+                <button onclick="switchTab('processes')" id="tab-processes" class="tab-btn px-6 py-3 text-sm font-medium text-gray-500 hover:text-gray-700">
+                    🧩 进程
+                </button>
+                <button onclick="switchTab('logs')" id="tab-logs" class="tab-btn px-6 py-3 text-sm font-medium text-gray-500 hover:text-gray-700">
+                    🧾 系统日志
+                </button>
+            </div>
+        </div>
+
+        <!-- 爬虫任务标签页 -->
+        <div id="tasks-tab" class="tab-content">
+            <!-- 创建任务表单 -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h2 class="text-xl font-semibold mb-4">创建新任务</h2>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">搜索关键词</label>
+                        <input type="text" id="keyword" placeholder="例如: Python, 人工智能"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">最大页数</label>
+                        <input type="number" id="max-pages" value="5" min="1" max="50"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                    <div class="flex items-end">
+                        <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                            <input type="checkbox" id="with-comments" checked
+                                class="h-4 w-4 text-blue-600 border-gray-300 rounded">
+                            爬取评论
+                        </label>
+                    </div>
+                    <div class="flex items-end">
+                        <button onclick="createTask()"
+                            class="w-full bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium">
+                            🚀 创建任务
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 任务列表 -->
+            <div class="bg-white rounded-lg shadow p-6">
+                <h2 class="text-xl font-semibold mb-4">任务列表</h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full" id="tasks-table">
+                        <thead>
+                            <tr class="border-b border-gray-200">
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">ID</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">关键词</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">页数</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">状态</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">评论</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">数据量</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">创建时间</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tasks-body">
+                            <!-- 任务数据将通过 JS 加载 -->
+                        </tbody>
+                    </table>
+                </div>
+                <div id="no-tasks" class="text-center py-8 text-gray-500">
+                    暂无任务，请创建新任务
+                </div>
+            </div>
+        </div>
+
+        <!-- Cookie 管理标签页 -->
+        <div id="cookies-tab" class="tab-content hidden">
+            <!-- 添加 Cookie 表单 -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h2 class="text-xl font-semibold mb-4">添加 Cookie</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Cookie 名称</label>
+                        <input type="text" id="cookie-name" placeholder="例如: SUB, SUBP"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Cookie 值</label>
+                        <input type="text" id="cookie-value" placeholder="Cookie 值"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">域</label>
+                        <input type="text" id="cookie-domain" value=".weibo.cn"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">路径</label>
+                        <input type="text" id="cookie-path" value="/"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="addCookie()"
+                        class="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition-colors font-medium">
+                        ➕ 添加 Cookie
+                    </button>
+                    <button onclick="importBrowserCookies()"
+                        class="bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700 transition-colors font-medium">
+                        🌐 从浏览器导入
+                    </button>
+                </div>
+            </div>
+
+            <!-- Cookie 列表 -->
+            <div class="bg-white rounded-lg shadow p-6">
+                <h2 class="text-xl font-semibold mb-4">Cookie 列表</h2>
+                <div id="cookies-container">
+                    <!-- Cookie 数据将通过 JS 加载 -->
+                </div>
+                <div id="no-cookies" class="text-center py-8 text-gray-500">
+                    暂无 Cookies，请添加
+                </div>
+            </div>
+
+            <!-- 使用说明 -->
+            <div class="bg-blue-50 rounded-lg p-6 mt-6">
+                <h3 class="text-lg font-semibold text-blue-800 mb-2">📖 如何获取微博 Cookie？</h3>
+                <ol class="list-decimal list-inside text-blue-700 space-y-2">
+                    <li>在浏览器中登录微博账号</li>
+                    <li>按 F12 打开开发者工具，切换到 Network 标签</li>
+                    <li>刷新页面，找到任意请求</li>
+                    <li>在 Request Headers 中找到 Cookie</li>
+                    <li>复制完整的 Cookie 字符串，点击"从浏览器导入"按钮</li>
+                </ol>
+            </div>
+
+            <!-- 账号 Cookie 包管理 -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h2 class="text-xl font-semibold mb-4">账号 Cookie 包</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">账号名称</label>
+                        <input type="text" id="bundle-name" placeholder="例如: account_1"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Cookie 字符串</label>
+                        <textarea id="bundle-cookie" rows="3" placeholder="粘贴完整 Cookie 字符串"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"></textarea>
+                    </div>
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">User-Agent（可选）</label>
+                    <input type="text" id="bundle-ua" placeholder="可为空，建议与账号绑定"
+                        list="ua-templates"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">绑定代理（可选）</label>
+                    <div class="flex flex-wrap items-center gap-2 mb-2">
+                        <button onclick="selectAllBundleProxies()" type="button"
+                            class="bg-gray-100 text-gray-700 px-3 py-1 rounded hover:bg-gray-200 text-xs">
+                            全选
+                        </button>
+                        <button onclick="clearBundleProxySelection()" type="button"
+                            class="bg-gray-100 text-gray-700 px-3 py-1 rounded hover:bg-gray-200 text-xs">
+                            清空
+                        </button>
+                        <span id="bundle-editing" class="text-xs text-blue-600"></span>
+                    </div>
+                    <div id="bundle-proxy-options" class="flex flex-wrap gap-2 text-sm text-gray-700">
+                        <span class="text-gray-500">暂无代理，请先添加代理池</span>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2">不勾选则使用全局代理池；勾选后该账号只使用指定代理。</p>
+                </div>
+                <div class="flex gap-2 mb-4">
+                    <button onclick="addCookieBundle()" id="bundle-submit"
+                        class="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition-colors font-medium">
+                        ➕ 添加账号
+                    </button>
+                    <button onclick="cancelBundleEdit()" id="bundle-cancel"
+                        class="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-200 transition-colors font-medium hidden">
+                        取消编辑
+                    </button>
+                    <button onclick="loadCookieBundles()"
+                        class="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+                        🔄 刷新
+                    </button>
+                </div>
+                <div id="bundle-container"></div>
+                <div id="no-bundles" class="text-center py-4 text-gray-500 hidden">
+                    暂无账号 Cookie
+                </div>
+            </div>
+
+            <!-- 代理管理 -->
+            <div class="bg-white rounded-lg shadow p-6">
+                <h2 class="text-xl font-semibold mb-4">代理池</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">代理（支持多行）</label>
+                        <textarea id="proxy-input" rows="3" placeholder="http://user:pass@host:port"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"></textarea>
+                    </div>
+                    <div class="flex items-end gap-2">
+                        <button onclick="addProxy()"
+                            class="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition-colors font-medium">
+                            ➕ 添加
+                        </button>
+                        <button onclick="loadProxies()"
+                            class="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+                            🔄 刷新
+                        </button>
+                    </div>
+                </div>
+                <div id="proxy-container"></div>
+                <div id="no-proxies" class="text-center py-4 text-gray-500 hidden">
+                    暂无代理
+                </div>
+            </div>
+        </div>
+
+        <!-- 情感词典标签页 -->
+        <div id="sentiment-tab" class="tab-content hidden">
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h2 class="text-xl font-semibold mb-4">情感词典管理</h2>
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">词典类型</label>
+                        <select id="senti-type"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                            <option value="positive">正向词（positive）</option>
+                            <option value="negative">负向词（negative）</option>
+                            <option value="negation">否定词（negation）</option>
+                            <option value="degree">程度词（degree）</option>
+                            <option value="stopwords">停用词（stopwords）</option>
+                        </select>
+                    </div>
+                    <div class="md:col-span-3">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">词语（支持多行）</label>
+                        <textarea id="senti-word" rows="3" placeholder="每行一个词"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"></textarea>
+                    </div>
+                    <div class="flex items-end">
+                        <button onclick="addSentimentWord()"
+                            class="w-full bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium">
+                            ➕ 添加
+                        </button>
+                    </div>
+                </div>
+                <div class="mt-4">
+                    <button onclick="loadSentimentWords()"
+                        class="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+                        🔄 刷新
+                    </button>
+                </div>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h2 class="text-xl font-semibold mb-2" id="senti-title">词典内容</h2>
+                <p class="text-sm text-gray-500 mb-4">正向/负向用于极性，否定词用于反转，程度词用于加权，停用词用于过滤。</p>
+                <div id="senti-list" class="flex flex-wrap gap-2"></div>
+            </div>
+        </div>
+
+        <!-- 后台任务标签页 -->
+        <div id="monitor-tab" class="tab-content hidden">
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h2 class="text-xl font-semibold mb-4">后台任务（MonitorSpider）</h2>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">数据源类型</label>
+                        <select id="monitor-type"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                            <option value="11">微博关键词（11）</option>
+                            <option value="12">微博主页url（12）</option>
+                            <option value="21">携程问答（21）</option>
+                            <option value="22">携程游记（22）</option>
+                            <option value="31">马蜂窝问答（31）</option>
+                            <option value="312">马蜂窝问答url（312）</option>
+                            <option value="32">马蜂窝游记（32）</option>
+                            <option value="322">马蜂窝游记url（322）</option>
+                            <option value="41">穷游问答（41）</option>
+                            <option value="42">穷游帖子（42）</option>
+                            <option value="5">小红书（5）</option>
+                        </select>
+                    </div>
+                    <button onclick="loadMonitorTasks()"
+                        class="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+                        🔄 刷新
+                    </button>
+                </div>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h2 class="text-xl font-semibold mb-4">任务列表</h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full" id="monitor-tasks-table">
+                        <thead>
+                            <tr class="border-b border-gray-200">
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">ID</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">类型</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">关键词</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">URL</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">状态</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">更新时间</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="monitor-tasks-body"></tbody>
+                    </table>
+                </div>
+                <div id="no-monitor-tasks" class="text-center py-8 text-gray-500">
+                    暂无后台任务
+                </div>
+            </div>
+        </div>
+
+        <!-- 进程标签页 -->
+        <div id="processes-tab" class="tab-content hidden">
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h2 class="text-xl font-semibold mb-4">爬虫进程</h2>
+                <div class="flex gap-2">
+                    <button onclick="loadProcesses()"
+                        class="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+                        🔄 刷新
+                    </button>
+                </div>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h2 class="text-xl font-semibold mb-4">运行列表</h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full" id="processes-table">
+                        <thead>
+                            <tr class="border-b border-gray-200">
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">任务 ID</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">来源</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">关键词</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">状态</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">PID</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">运行时长</th>
+                                <th class="text-left py-3 px-4 text-sm font-medium text-gray-600">命令</th>
+                            </tr>
+                        </thead>
+                        <tbody id="processes-body"></tbody>
+                    </table>
+                </div>
+                <div id="no-processes" class="text-center py-8 text-gray-500">
+                    暂无爬虫进程
+                </div>
+            </div>
+        </div>
+
+        <!-- 系统日志标签页 -->
+        <div id="logs-tab" class="tab-content hidden">
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h2 class="text-xl font-semibold mb-4">系统日志</h2>
+                <div class="flex gap-2">
+                    <button onclick="loadSystemLogs()"
+                        class="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+                        🔄 刷新
+                    </button>
+                </div>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <pre id="system-logs-content" class="text-xs bg-gray-50 p-4 rounded-lg max-h-[70vh] overflow-auto"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div id="toast" class="fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg transform translate-y-20 opacity-0 transition-all duration-300">
+    </div>
+
+    <datalist id="ua-templates">
+        <option value="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"></option>
+        <option value="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"></option>
+    </datalist>
+
+    <script>
+        const API_BASE = '/weibo/api';
+        const apiFetch = (path, options) => fetch(`${API_BASE}${path}`, options);
+        window.bundleProxySelection = [];
+        // 切换标签页
+        function switchTab(tab) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('.tab-btn').forEach(el => {
+                el.classList.remove('text-blue-600', 'border-b-2', 'border-blue-600');
+                el.classList.add('text-gray-500');
+            });
+
+            document.getElementById(`${tab}-tab`).classList.remove('hidden');
+            const tabBtn = document.getElementById(`tab-${tab}`);
+            tabBtn.classList.remove('text-gray-500');
+            tabBtn.classList.add('text-blue-600', 'border-b-2', 'border-blue-600');
+
+            if (tab === 'tasks') {
+                loadTasks();
+            } else if (tab === 'cookies') {
+                loadCookies();
+                loadCookieBundles();
+                loadProxies();
+            } else if (tab === 'sentiment') {
+                loadSentimentWords();
+            } else if (tab === 'monitor') {
+                loadMonitorTasks();
+            } else if (tab === 'processes') {
+                loadProcesses();
+            } else if (tab === 'logs') {
+                loadSystemLogs();
+            }
+        }
+
+        // 加载任务列表
+        async function loadTasks() {
+            const response = await apiFetch('/tasks');
+            const tasks = await response.json();
+
+            const tbody = document.getElementById('tasks-body');
+            const noTasks = document.getElementById('no-tasks');
+
+            if (tasks.length === 0) {
+                tbody.innerHTML = '';
+                noTasks.classList.remove('hidden');
+                return;
+            }
+
+            noTasks.classList.add('hidden');
+            tbody.innerHTML = tasks.map(task => `
+                <tr class="border-b border-gray-100 hover:bg-gray-50">
+                    <td class="py-3 px-4 text-sm text-gray-900">${task.id}</td>
+                    <td class="py-3 px-4 text-sm text-gray-900 font-medium">${task.keyword}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${task.max_pages}</td>
+                    <td class="py-3 px-4">
+                        <span class="px-3 py-1 text-xs font-medium rounded-full ${getStatusClass(task.status)}">
+                            ${getStatusText(task.status)}
+                        </span>
+                    </td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${task.with_comments ? '是' : '否'}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${task.items_count || 0}</td>
+                    <td class="py-3 px-4 text-sm text-gray-500">${formatDateTime(task.created_at)}</td>
+                    <td class="py-3 px-4">
+                        <div class="flex gap-2">
+                            ${task.status === 'pending' || task.status === 'failed' ? `
+                                <button onclick="restartTask(${task.id})"
+                                    class="text-blue-600 hover:text-blue-800 text-sm font-medium">重新运行</button>
+                            ` : ''}
+                            ${task.status === 'running' ? `
+                                <button onclick="stopTask(${task.id})"
+                                    class="text-orange-600 hover:text-orange-800 text-sm font-medium">停止</button>
+                            ` : ''}
+                            ${task.status === 'completed' ? `
+                                <button onclick="viewData(${task.id})"
+                                    class="text-green-600 hover:text-green-800 text-sm font-medium">查看数据</button>
+                            ` : ''}
+                            ${task.status === 'completed' && task.with_comments ? `
+                                <button onclick="viewComments(${task.id})"
+                                    class="text-purple-600 hover:text-purple-800 text-sm font-medium">查看评论</button>
+                            ` : ''}
+                            <button onclick="viewLogs(${task.id})"
+                                class="text-gray-600 hover:text-gray-800 text-sm font-medium">查看日志</button>
+                            <button onclick="deleteTask(${task.id})"
+                                class="text-red-600 hover:text-red-800 text-sm font-medium">删除</button>
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        // 创建任务
+        async function createTask() {
+            const keyword = document.getElementById('keyword').value.trim();
+            const maxPages = document.getElementById('max-pages').value;
+            const withComments = document.getElementById('with-comments').checked;
+
+            if (!keyword) {
+                showToast('请输入搜索关键词', 'error');
+                return;
+            }
+
+            try {
+                const response = await apiFetch('/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keyword, max_pages: Number(maxPages) || 1, with_comments: withComments })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showToast('任务创建成功！', 'success');
+                    document.getElementById('keyword').value = '';
+                    document.getElementById('with-comments').checked = false;
+                    loadTasks();
+                }
+            } catch (error) {
+                showToast('创建任务失败', 'error');
+            }
+        }
+
+        // 删除任务
+        async function deleteTask(taskId) {
+            if (!confirm('确定要删除此任务吗？')) return;
+
+            try {
+                const response = await apiFetch(`/tasks/${taskId}`, { method: 'DELETE' });
+                const result = await response.json();
+
+                if (result.success) {
+                    showToast('任务已删除', 'success');
+                    loadTasks();
+                }
+            } catch (error) {
+                showToast('删除失败', 'error');
+            }
+        }
+
+        // 重新运行任务
+        async function restartTask(taskId) {
+            try {
+                const response = await apiFetch(`/tasks/${taskId}/start`, { method: 'POST' });
+                const result = await response.json();
+
+                if (result.success) {
+                    showToast('任务已重新启动', 'success');
+                    setTimeout(loadTasks, 3000);
+                }
+            } catch (error) {
+                showToast('启动失败', 'error');
+            }
+        }
+
+        // 停止任务
+        async function stopTask(taskId) {
+            if (!confirm('确定要停止此任务吗？')) return;
+
+            try {
+                const response = await apiFetch(`/tasks/${taskId}/stop`, { method: 'POST' });
+                const result = await response.json();
+
+                if (result.success) {
+                    showToast('任务已停止', 'success');
+                    setTimeout(loadTasks, 1500);
+                } else {
+                    showToast(result.error || '停止失败', 'error');
+                }
+            } catch (error) {
+                showToast('停止失败', 'error');
+            }
+        }
+
+        // 查看数据
+        async function viewData(taskId) {
+            try {
+                const response = await apiFetch(`/tasks/${taskId}/data?limit=50&offset=0`);
+                if (!response.ok) {
+                    showToast('读取数据失败', 'error');
+                    return;
+                }
+                const data = await response.json();
+                showDataModal(data, taskId);
+            } catch (error) {
+                showToast('读取数据失败', 'error');
+            }
+        }
+
+        function showDataModal(data, taskId) {
+            const modal = document.getElementById('data-modal');
+            const content = document.getElementById('data-content');
+            const title = document.getElementById('data-title');
+            title.textContent = `任务 ${taskId} 数据预览（${data.total} 条，显示前 ${data.items.length} 条）`;
+            content.textContent = JSON.stringify(data.items, null, 2);
+            modal.classList.remove('hidden');
+        }
+
+        function closeDataModal() {
+            document.getElementById('data-modal').classList.add('hidden');
+        }
+
+        // 查看评论
+        async function viewComments(taskId) {
+            try {
+                const response = await apiFetch(`/tasks/${taskId}/comments?limit=50&offset=0`);
+                if (!response.ok) {
+                    showToast('读取评论失败', 'error');
+                    return;
+                }
+                const data = await response.json();
+                showCommentsModal(data, taskId);
+            } catch (error) {
+                showToast('读取评论失败', 'error');
+            }
+        }
+
+        function showCommentsModal(data, taskId) {
+            const modal = document.getElementById('comments-modal');
+            const content = document.getElementById('comments-content');
+            const title = document.getElementById('comments-title');
+            title.textContent = `任务 ${taskId} 评论预览（${data.total} 条，显示前 ${data.items.length} 条）`;
+            content.textContent = JSON.stringify(data.items, null, 2);
+            modal.classList.remove('hidden');
+        }
+
+        function closeCommentsModal() {
+            document.getElementById('comments-modal').classList.add('hidden');
+        }
+
+        // 查看日志
+        async function viewLogs(taskId) {
+            try {
+                const response = await apiFetch(`/tasks/${taskId}/logs?limit=300`);
+                if (!response.ok) {
+                    showToast('读取日志失败', 'error');
+                    return;
+                }
+                const data = await response.json();
+                showLogsModal(taskId, data);
+            } catch (error) {
+                showToast('读取日志失败', 'error');
+            }
+        }
+
+        function showLogsModal(taskId, data) {
+            const modal = document.getElementById('logs-modal');
+            const content = document.getElementById('logs-content');
+            const title = document.getElementById('logs-title');
+            title.textContent = `任务日志（${data.total} 行，显示最近 ${data.lines.length} 行）`;
+            content.textContent = data.lines.join('\n') || '暂无日志';
+            modal.dataset.taskId = taskId;
+            modal.classList.remove('hidden');
+        }
+
+        function closeLogsModal() {
+            document.getElementById('logs-modal').classList.add('hidden');
+        }
+
+        // 加载 Cookies
+        async function loadCookies() {
+            const response = await apiFetch('/cookies');
+            const cookies = await response.json();
+
+            const container = document.getElementById('cookies-container');
+            const noCookies = document.getElementById('no-cookies');
+
+            if (cookies.length === 0) {
+                container.innerHTML = '';
+                noCookies.classList.remove('hidden');
+                return;
+            }
+
+            noCookies.classList.add('hidden');
+            container.innerHTML = cookies.map(cookie => `
+                <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg mb-3">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2">
+                            <span class="font-semibold text-gray-900">${cookie.name}</span>
+                            <span class="text-xs text-gray-500">${cookie.domain}</span>
+                        </div>
+                        <div class="text-sm text-gray-600 mt-1 truncate max-w-2xl">${cookie.value}</div>
+                        <div class="text-xs text-gray-400 mt-1">更新时间: ${cookie.updated_at}</div>
+                    </div>
+                    <button onclick="deleteCookie('${cookie.name}')"
+                        class="ml-4 text-red-600 hover:text-red-800 text-sm font-medium">
+                        删除
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        async function loadCookieBundles() {
+            const response = await apiFetch('/cookie_bundles');
+            const bundles = await response.json();
+            const container = document.getElementById('bundle-container');
+            const empty = document.getElementById('no-bundles');
+            if (bundles.length === 0) {
+                container.innerHTML = '';
+                empty.classList.remove('hidden');
+                return;
+            }
+            empty.classList.add('hidden');
+            container.innerHTML = bundles.map(bundle => `
+                <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg mb-3">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2">
+                            <span class="font-semibold text-gray-900">${bundle.name}</span>
+                        </div>
+                        <div class="text-sm text-gray-600 mt-1 truncate max-w-2xl">${bundle.cookie_string}</div>
+                        <div class="text-xs text-gray-400 mt-1">UA: ${formatBundleUserAgent(bundle.user_agent)}</div>
+                        <div class="text-xs text-gray-400 mt-1">绑定代理: ${formatBundleProxies(bundle.proxies)}</div>
+                        <div class="text-xs text-gray-400 mt-1">更新时间: ${bundle.updated_at || ''}</div>
+                    </div>
+                    <div class="ml-4 flex flex-col gap-2">
+                        <button onclick="editCookieBundle('${bundle.name}', '${encodeURIComponent(bundle.cookie_string || '')}', '${encodeURIComponent(bundle.proxies || '')}', '${encodeURIComponent(bundle.user_agent || '')}')"
+                            class="text-blue-600 hover:text-blue-800 text-sm font-medium">
+                            编辑
+                        </button>
+                        <button onclick="deleteCookieBundle('${bundle.name}')"
+                            class="text-red-600 hover:text-red-800 text-sm font-medium">
+                            删除
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function addCookieBundle() {
+            const name = document.getElementById('bundle-name').value.trim();
+            const cookieString = document.getElementById('bundle-cookie').value.trim();
+            const userAgent = document.getElementById('bundle-ua').value.trim();
+            const selectedProxies = Array.from(
+                document.querySelectorAll('input[name="bundle-proxy"]:checked')
+            ).map(el => el.value);
+            if (!name || !cookieString) {
+                showToast('请填写账号名称和 Cookie', 'error');
+                return;
+            }
+            const response = await apiFetch('/cookie_bundles', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name,
+                    cookie_string: cookieString,
+                    proxies: selectedProxies,
+                    user_agent: userAgent
+                })
+            });
+            if (response.ok) {
+                document.getElementById('bundle-name').value = '';
+                document.getElementById('bundle-cookie').value = '';
+                document.getElementById('bundle-ua').value = '';
+                clearBundleProxySelection();
+                clearBundleEditing();
+                loadCookieBundles();
+                showToast('账号已保存', 'success');
+            } else {
+                showToast('添加失败', 'error');
+            }
+        }
+
+        async function deleteCookieBundle(name) {
+            const response = await apiFetch(`/cookie_bundles?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+            if (response.ok) {
+                loadCookieBundles();
+                showToast('账号已删除', 'success');
+            } else {
+                showToast('删除失败', 'error');
+            }
+        }
+
+        async function loadProxies() {
+            const response = await apiFetch('/proxies');
+            const proxies = await response.json();
+            renderBundleProxyOptions(proxies);
+            const container = document.getElementById('proxy-container');
+            const empty = document.getElementById('no-proxies');
+            if (proxies.length === 0) {
+                container.innerHTML = '';
+                empty.classList.remove('hidden');
+                return;
+            }
+            empty.classList.add('hidden');
+            container.innerHTML = proxies.map(proxy => `
+                <div class="flex items-center justify-between p-2 bg-gray-50 rounded-lg mb-2">
+                    <div class="text-sm text-gray-700 truncate max-w-2xl">${proxy}</div>
+                    <button onclick="deleteProxy('${proxy}')"
+                        class="ml-4 text-red-600 hover:text-red-800 text-sm font-medium">
+                        删除
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        async function addProxy() {
+            const text = document.getElementById('proxy-input').value.trim();
+            if (!text) {
+                showToast('请输入代理', 'error');
+                return;
+            }
+            const response = await apiFetch('/proxies', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ proxies: text })
+            });
+            if (response.ok) {
+                document.getElementById('proxy-input').value = '';
+                loadProxies();
+                showToast('代理已添加', 'success');
+            } else {
+                showToast('添加失败', 'error');
+            }
+        }
+
+        async function deleteProxy(proxy) {
+            const response = await apiFetch(`/proxies?proxy=${encodeURIComponent(proxy)}`, { method: 'DELETE' });
+            if (response.ok) {
+                loadProxies();
+                showToast('代理已删除', 'success');
+            } else {
+                showToast('删除失败', 'error');
+            }
+        }
+
+        function renderBundleProxyOptions(proxies) {
+            const container = document.getElementById('bundle-proxy-options');
+            if (!container) return;
+            if (!proxies || proxies.length === 0) {
+                container.innerHTML = '<span class="text-gray-500">暂无代理，请先添加代理池</span>';
+                return;
+            }
+            container.innerHTML = proxies.map(proxy => `
+                <label class="flex items-center gap-2 bg-gray-50 px-2 py-1 rounded">
+                    <input type="checkbox" name="bundle-proxy" value="${proxy}" class="rounded">
+                    <span class="max-w-xs truncate">${proxy}</span>
+                </label>
+            `).join('');
+            applyBundleProxySelection();
+        }
+
+        function clearBundleProxySelection() {
+            document.querySelectorAll('input[name="bundle-proxy"]').forEach(el => {
+                el.checked = false;
+            });
+            window.bundleProxySelection = [];
+        }
+
+        function formatBundleProxies(raw) {
+            if (!raw) return '未绑定';
+            let proxies = [];
+            try {
+                proxies = JSON.parse(raw);
+            } catch (e) {
+                proxies = [];
+            }
+            if (!Array.isArray(proxies) || proxies.length === 0) {
+                return '未绑定';
+            }
+            return proxies.join(', ');
+        }
+
+        function formatBundleUserAgent(raw) {
+            if (!raw) return '未设置';
+            return raw;
+        }
+
+        function applyBundleProxySelection() {
+            const selection = window.bundleProxySelection || [];
+            if (!selection.length) return;
+            document.querySelectorAll('input[name="bundle-proxy"]').forEach(el => {
+                el.checked = selection.includes(el.value);
+            });
+        }
+
+        function selectAllBundleProxies() {
+            const selected = [];
+            document.querySelectorAll('input[name="bundle-proxy"]').forEach(el => {
+                el.checked = true;
+                selected.push(el.value);
+            });
+            window.bundleProxySelection = selected;
+        }
+
+        function editCookieBundle(name, cookieEncoded, proxiesEncoded, uaEncoded) {
+            document.getElementById('bundle-name').value = name;
+            document.getElementById('bundle-cookie').value = decodeURIComponent(cookieEncoded || '');
+            document.getElementById('bundle-ua').value = decodeURIComponent(uaEncoded || '');
+            let parsed = [];
+            try {
+                parsed = JSON.parse(decodeURIComponent(proxiesEncoded || ''));
+            } catch (e) {
+                parsed = [];
+            }
+            window.bundleProxySelection = Array.isArray(parsed) ? parsed : [];
+            applyBundleProxySelection();
+            setBundleEditing(name);
+        }
+
+        function setBundleEditing(name) {
+            const label = document.getElementById('bundle-editing');
+            const cancelBtn = document.getElementById('bundle-cancel');
+            const submitBtn = document.getElementById('bundle-submit');
+            label.textContent = name ? `正在编辑：${name}` : '';
+            if (name) {
+                cancelBtn.classList.remove('hidden');
+                submitBtn.textContent = '💾 保存账号';
+            } else {
+                cancelBtn.classList.add('hidden');
+                submitBtn.textContent = '➕ 添加账号';
+            }
+        }
+
+        function clearBundleEditing() {
+            window.bundleProxySelection = [];
+            setBundleEditing('');
+        }
+
+        function cancelBundleEdit() {
+            document.getElementById('bundle-name').value = '';
+            document.getElementById('bundle-cookie').value = '';
+            document.getElementById('bundle-ua').value = '';
+            clearBundleProxySelection();
+            clearBundleEditing();
+        }
+
+        // 添加 Cookie
+        async function addCookie() {
+            const name = document.getElementById('cookie-name').value.trim();
+            const value = document.getElementById('cookie-value').value.trim();
+            const domain = document.getElementById('cookie-domain').value.trim();
+            const path = document.getElementById('cookie-path').value.trim();
+
+            if (!name || !value) {
+                showToast('请填写 Cookie 名称和值', 'error');
+                return;
+            }
+
+            try {
+                const response = await apiFetch('/cookies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, value, domain, path })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showToast('Cookie 已添加', 'success');
+                    document.getElementById('cookie-name').value = '';
+                    document.getElementById('cookie-value').value = '';
+                    loadCookies();
+                }
+            } catch (error) {
+                showToast('添加失败', 'error');
+            }
+        }
+
+        // 删除 Cookie
+        async function deleteCookie(name) {
+            if (!confirm(`确定要删除 Cookie "${name}"吗？`)) return;
+
+            try {
+                const response = await apiFetch(`/cookies?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+                const result = await response.json();
+
+                if (result.success) {
+                    showToast('Cookie 已删除', 'success');
+                    loadCookies();
+                }
+            } catch (error) {
+                showToast('删除失败', 'error');
+            }
+        }
+
+        // 从浏览器导入 Cookie
+        function importBrowserCookies() {
+            const cookieString = prompt('请粘贴完整的 Cookie 字符串：');
+
+            if (!cookieString) return;
+
+            // 解析 Cookie 字符串
+            const cookies = cookieString.split(';').map(c => {
+                const [name, ...values] = c.trim().split('=');
+                return { name: name.trim(), value: values.join('=').trim() };
+            }).filter(c => c.name);
+
+            if (cookies.length === 0) {
+                showToast('Cookie 格式错误', 'error');
+                return;
+            }
+
+            // 批量添加 Cookies
+            let successCount = 0;
+            cookies.forEach(async (cookie) => {
+                try {
+                    const response = await apiFetch('/cookies', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(cookie)
+                    });
+                    const result = await response.json();
+                    if (result.success) successCount++;
+                } catch (e) {}
+            });
+
+            setTimeout(() => {
+                if (successCount > 0) {
+                    showToast(`成功导入 ${successCount} 个 Cookies`, 'success');
+                    loadCookies();
+                } else {
+                    showToast('导入失败', 'error');
+                }
+            }, 500);
+        }
+
+        // 加载情感词典
+        async function loadSentimentWords() {
+            const type = document.getElementById('senti-type').value;
+            const response = await apiFetch(`/sentiment/words?type=${encodeURIComponent(type)}`);
+            if (!response.ok) {
+                showToast('加载词典失败', 'error');
+                return;
+            }
+            const data = await response.json();
+            const words = Array.isArray(data)
+                ? data
+                : (data[type] || data.words || data.items || []);
+            const list = document.getElementById('senti-list');
+            const title = document.getElementById('senti-title');
+            const labelMap = {
+                positive: '正向词',
+                negative: '负向词',
+                negation: '否定词',
+                degree: '程度词',
+                stopwords: '停用词'
+            };
+            title.textContent = `词典内容：${labelMap[type] || type}（${words.length}）`;
+            list.innerHTML = words.map(word => `
+                <span class="px-2 py-1 bg-gray-100 rounded text-xs">
+                    ${word}
+                    <button class="ml-1 text-red-500" onclick="removeSentimentWord('${type}','${word}')">×</button>
+                </span>
+            `).join('');
+        }
+
+        async function addSentimentWord() {
+            const type = document.getElementById('senti-type').value;
+            const wordText = document.getElementById('senti-word').value.trim();
+            if (!wordText) {
+                showToast('请输入词语', 'error');
+                return;
+            }
+            const words = wordText.split('\n').map(w => w.trim()).filter(Boolean);
+            const response = await apiFetch('/sentiment/words', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type, words })
+            });
+            if (response.ok) {
+                document.getElementById('senti-word').value = '';
+                loadSentimentWords();
+                showToast('已添加', 'success');
+            } else {
+                showToast('添加失败', 'error');
+            }
+        }
+
+        async function removeSentimentWord(type, word) {
+            const response = await apiFetch(`/sentiment/words?type=${encodeURIComponent(type)}&word=${encodeURIComponent(word)}`, {
+                method: 'DELETE'
+            });
+            if (response.ok) {
+                loadSentimentWords();
+                showToast('已删除', 'success');
+            } else {
+                showToast('删除失败', 'error');
+            }
+        }
+
+        async function loadMonitorTasks() {
+            const type = document.getElementById('monitor-type').value;
+            const response = await apiFetch(`/monitor/tasks?ms_types=${encodeURIComponent(type)}`);
+            if (!response.ok) {
+                showToast('加载后台任务失败', 'error');
+                return;
+            }
+            const data = await response.json();
+            const tasks = data.tasks || [];
+            const tbody = document.getElementById('monitor-tasks-body');
+            const empty = document.getElementById('no-monitor-tasks');
+            if (tasks.length === 0) {
+                tbody.innerHTML = '';
+                empty.classList.remove('hidden');
+                return;
+            }
+            empty.classList.add('hidden');
+            tbody.innerHTML = tasks.map(task => `
+                <tr class="border-b border-gray-100 hover:bg-gray-50">
+                    <td class="py-3 px-4 text-sm text-gray-900">${task.ms_id}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${formatMonitorType(task.ms_type)}</td>
+                    <td class="py-3 px-4 text-sm text-gray-900">${task.ms_keys || ''}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600 truncate max-w-md">${task.ms_start_url || ''}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${task.ms_status}</td>
+                    <td class="py-3 px-4 text-sm text-gray-500">${formatDateTime(task.ms_modify_date)}</td>
+                    <td class="py-3 px-4">
+                        <button onclick="enqueueMonitorTask(${task.ms_id})"
+                            class="text-blue-600 hover:text-blue-800 text-sm font-medium">加入队列</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function loadProcesses() {
+            const response = await apiFetch('/processes');
+            if (!response.ok) {
+                showToast('加载进程失败', 'error');
+                return;
+            }
+            const processes = await response.json();
+            const tbody = document.getElementById('processes-body');
+            const empty = document.getElementById('no-processes');
+            if (processes.length === 0) {
+                tbody.innerHTML = '';
+                empty.classList.remove('hidden');
+                return;
+            }
+            empty.classList.add('hidden');
+            tbody.innerHTML = processes.map(item => `
+                <tr class="border-b border-gray-100 hover:bg-gray-50">
+                    <td class="py-3 px-4 text-sm text-gray-900">${item.task_id ?? '-'}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${item.task_id ? '任务' : '外部'}</td>
+                    <td class="py-3 px-4 text-sm text-gray-900 font-medium">${item.keyword || ''}</td>
+                    <td class="py-3 px-4">
+                        <span class="px-3 py-1 text-xs font-medium rounded-full ${getStatusClass(item.status)}">
+                            ${getStatusText(item.status)}
+                        </span>
+                    </td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${item.pid}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${(item.process && item.process.etime) || '-'}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600 truncate max-w-md">${(item.process && item.process.command) || '-'}</td>
+                </tr>
+            `).join('');
+        }
+
+        async function enqueueMonitorTask(msId) {
+            const response = await apiFetch(`/monitor/tasks/${msId}/enqueue`, { method: 'POST' });
+            const result = await response.json();
+            if (response.ok && result.success) {
+                const spider = result.spider || {};
+                if (spider.started) {
+                    showToast('已加入队列，爬虫已启动', 'success');
+                } else if (spider.reason === 'already_running') {
+                    showToast('已加入队列，爬虫已在运行', 'info');
+                } else {
+                    showToast('已加入队列', 'success');
+                }
+            } else {
+                showToast(result.error || '加入队列失败', 'error');
+            }
+        }
+
+        async function loadSystemLogs() {
+            const response = await apiFetch('/logs?limit=300');
+            if (!response.ok) {
+                showToast('加载日志失败', 'error');
+                return;
+            }
+            const data = await response.json();
+            const content = document.getElementById('system-logs-content');
+            content.textContent = data.lines.join('\n') || '暂无日志';
+        }
+
+        function formatDateTime(value) {
+            if (!value) return '';
+            const text = String(value).replace('T', ' ').replace('Z', '');
+            if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/.test(text)) {
+                return text.slice(0, 16);
+            }
+            return text;
+        }
+
+        function formatMonitorType(value) {
+            const map = {
+                '11': '微博关键词（11）',
+                '12': '微博主页url（12）',
+                '21': '携程问答（21）',
+                '22': '携程游记（22）',
+                '31': '马蜂窝问答（31）',
+                '312': '马蜂窝问答url（312）',
+                '32': '马蜂窝游记（32）',
+                '322': '马蜂窝游记url（322）',
+                '41': '穷游问答（41）',
+                '42': '穷游帖子（42）',
+                '5': '小红书（5）',
+            };
+            return map[String(value)] || value;
+        }
+
+        // 状态样式类
+        function getStatusClass(status) {
+            const classes = {
+                'pending': 'bg-gray-100 text-gray-800',
+                'running': 'bg-blue-100 text-blue-800',
+                'completed': 'bg-green-100 text-green-800',
+                'failed': 'bg-red-100 text-red-800',
+                'stopped': 'bg-orange-100 text-orange-800'
+            };
+            return classes[status] || classes['pending'];
+        }
+
+        // 状态文本
+        function getStatusText(status) {
+            const texts = {
+                'pending': '等待中',
+                'running': '运行中',
+                'completed': '已完成',
+                'failed': '失败',
+                'stopped': '已停止'
+            };
+            return texts[status] || status;
+        }
+
+        // Toast 通知
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            const classes = {
+                'success': 'bg-green-500 text-white',
+                'error': 'bg-red-500 text-white',
+                'info': 'bg-blue-500 text-white'
+            };
+
+            toast.className = `fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg transition-all duration-300 ${classes[type]}`;
+            toast.textContent = message;
+            toast.classList.remove('translate-y-20', 'opacity-0');
+
+            setTimeout(() => {
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 3000);
+        }
+
+        // 页面加载时初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            loadTasks();
+        });
+    </script>
+
+    <div id="data-modal" class="fixed inset-0 bg-black/40 hidden">
+        <div class="max-w-5xl mx-auto mt-16 bg-white rounded-xl shadow-lg p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h3 id="data-title" class="text-lg font-semibold text-gray-900">数据预览</h3>
+                <button onclick="closeDataModal()" class="text-gray-500 hover:text-gray-700">关闭</button>
+            </div>
+            <pre id="data-content" class="text-xs bg-gray-50 p-4 rounded-lg max-h-[70vh] overflow-auto"></pre>
+        </div>
+    </div>
+
+    <div id="logs-modal" class="fixed inset-0 bg-black/40 hidden">
+        <div class="max-w-5xl mx-auto mt-16 bg-white rounded-xl shadow-lg p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h3 id="logs-title" class="text-lg font-semibold text-gray-900">任务日志</h3>
+                <button onclick="closeLogsModal()" class="text-gray-500 hover:text-gray-700">关闭</button>
+            </div>
+            <pre id="logs-content" class="text-xs bg-gray-50 p-4 rounded-lg max-h-[70vh] overflow-auto"></pre>
+        </div>
+    </div>
+
+    <div id="comments-modal" class="fixed inset-0 bg-black/40 hidden">
+        <div class="max-w-5xl mx-auto mt-16 bg-white rounded-xl shadow-lg p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h3 id="comments-title" class="text-lg font-semibold text-gray-900">评论预览</h3>
+                <button onclick="closeCommentsModal()" class="text-gray-500 hover:text-gray-700">关闭</button>
+            </div>
+            <pre id="comments-content" class="text-xs bg-gray-50 p-4 rounded-lg max-h-[70vh] overflow-auto"></pre>
+        </div>
+    </div>
+</body>
+</html>

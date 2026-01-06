@@ -20,6 +20,8 @@
 import sys
 import io
 
+from dotenv import load_dotenv
+
 # Force UTF-8 encoding for stdout/stderr to prevent encoding errors
 # when outputting Chinese characters in non-UTF-8 terminals
 if sys.stdout and hasattr(sys.stdout, 'buffer'):
@@ -28,6 +30,8 @@ if sys.stdout and hasattr(sys.stdout, 'buffer'):
 if sys.stderr and hasattr(sys.stderr, 'buffer'):
     if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+load_dotenv()
 
 import asyncio
 from typing import Optional, Type

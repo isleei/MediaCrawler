@@ -107,7 +107,7 @@ def rfc2822_to_china_datetime(rfc2822_time):
 
     # Convert datetime object timezone to China timezone
     dt_object_china = dt_object.astimezone(timezone(timedelta(hours=8)))
-    return dt_object_china
+    return dt_object_china.replace(tzinfo=None)
 
 
 def rfc2822_to_timestamp(rfc2822_time):

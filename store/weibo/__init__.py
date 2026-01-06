@@ -23,18 +23,22 @@
 # @Desc    :
 
 import re
+from datetime import datetime
 from typing import List
 
 from var import source_keyword_var
 
 from .weibo_store_media import *
 from ._store_impl import *
+from .weibo_store_compat import WeiboCompatStoreImplement
+from tools.sentiment import senti_python
 
 
 class WeibostoreFactory:
     STORES = {
         "csv": WeiboCsvStoreImplement,
         "db": WeiboDbStoreImplement,
+        "compat": WeiboCompatStoreImplement,
         "json": WeiboJsonStoreImplement,
         "sqlite": WeiboSqliteStoreImplement,
         "mongodb": WeiboMongoStoreImplement,
@@ -47,6 +51,36 @@ class WeibostoreFactory:
         if not store_class:
             raise ValueError("[WeibotoreFactory.create_store] Invalid save option only supported csv or db or json or sqlite or mongodb or excel ...")
         return store_class()
+
+
+def _calc_senti_score(text: str) -> int:
+    if not getattr(config, "SENTI_ENABLED", True):
+        return 0
+    if not text:
+        return 0
+    try:
+        result = senti_python.senti_content(text)
+        return int(result.get("senti_result", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _normalize_datetime_text(value):
+    if not value:
+        return value
+    # If it's a datetime object with timezone, remove timezone first
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.replace(tzinfo=None)
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    text = str(value).strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}\d{2}:\d{2}:\d{2}", text):
+        text = f"{text[:10]} {text[10:]}"
+    text = text.replace("T", " ")
+    text = re.sub(r"([+-]\d{2}:\d{2}|[+-]\d{4}|Z)$", "", text)
+    if len(text) > 19:
+        text = text[:19]
+    return text
 
 
 async def batch_update_weibo_notes(note_list: List[Dict]):
@@ -86,13 +120,16 @@ async def update_weibo_note(note_item: Dict):
         "note_id": note_id,
         "content": clean_text,
         "create_time": utils.rfc2822_to_timestamp(mblog.get("created_at")),
-        "create_date_time": str(utils.rfc2822_to_china_datetime(mblog.get("created_at"))),
+        "create_date_time": _normalize_datetime_text(
+            utils.rfc2822_to_china_datetime(mblog.get("created_at"))
+        ),
         "liked_count": str(mblog.get("attitudes_count", 0)),
         "comments_count": str(mblog.get("comments_count", 0)),
         "shared_count": str(mblog.get("reposts_count", 0)),
         "last_modify_ts": utils.get_current_timestamp(),
         "note_url": f"https://m.weibo.cn/detail/{note_id}",
         "ip_location": mblog.get("region_name", "").replace("发布于 ", ""),
+        "senti_score": _calc_senti_score(clean_text),
 
         # 用户信息
         "user_id": str(user_info.get("id")),
@@ -141,7 +178,9 @@ async def update_weibo_note_comment(note_id: str, comment_item: Dict):
     save_comment_item = {
         "comment_id": comment_id,
         "create_time": utils.rfc2822_to_timestamp(comment_item.get("created_at")),
-        "create_date_time": str(utils.rfc2822_to_china_datetime(comment_item.get("created_at"))),
+        "create_date_time": _normalize_datetime_text(
+            utils.rfc2822_to_china_datetime(comment_item.get("created_at"))
+        ),
         "note_id": note_id,
         "content": clean_text,
         "sub_comment_count": str(comment_item.get("total_number", 0)),
@@ -149,6 +188,7 @@ async def update_weibo_note_comment(note_id: str, comment_item: Dict):
         "last_modify_ts": utils.get_current_timestamp(),
         "ip_location": comment_item.get("source", "").replace("来自", ""),
         "parent_comment_id": comment_item.get("rootid", ""),
+        "senti_score": _calc_senti_score(clean_text),
 
         # 用户信息
         "user_id": str(user_info.get("id")),

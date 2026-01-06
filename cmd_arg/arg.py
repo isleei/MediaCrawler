@@ -73,6 +73,7 @@ class SaveDataOptionEnum(str, Enum):
     SQLITE = "sqlite"
     MONGODB = "mongodb"
     EXCEL = "excel"
+    COMPAT = "compat"
 
 
 class InitDbOptionEnum(str, Enum):
@@ -197,6 +198,24 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
                 show_default=True,
             ),
         ] = str(config.ENABLE_GET_SUB_COMMENTS),
+        max_notes: Annotated[
+            int,
+            typer.Option(
+                "--max_notes",
+                help="Maximum number of notes/posts to crawl",
+                rich_help_panel="Crawler Limits",
+                show_default=True,
+            ),
+        ] = config.CRAWLER_MAX_NOTES_COUNT,
+        max_comments: Annotated[
+            int,
+            typer.Option(
+                "--max_comments",
+                help="Maximum comments per note/post",
+                rich_help_panel="Crawler Limits",
+                show_default=True,
+            ),
+        ] = config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES,
         headless: Annotated[
             str,
             typer.Option(
@@ -268,6 +287,8 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         config.KEYWORDS = keywords
         config.ENABLE_GET_COMMENTS = enable_comment
         config.ENABLE_GET_SUB_COMMENTS = enable_sub_comment
+        config.CRAWLER_MAX_NOTES_COUNT = max_notes
+        config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = max_comments
         config.HEADLESS = enable_headless
         config.CDP_HEADLESS = enable_headless
         config.SAVE_DATA_OPTION = save_data_option.value
@@ -306,6 +327,8 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
             keywords=config.KEYWORDS,
             get_comment=config.ENABLE_GET_COMMENTS,
             get_sub_comment=config.ENABLE_GET_SUB_COMMENTS,
+            max_notes=config.CRAWLER_MAX_NOTES_COUNT,
+            max_comments=config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES,
             headless=config.HEADLESS,
             save_data_option=config.SAVE_DATA_OPTION,
             init_db=init_db_value,

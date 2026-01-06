@@ -111,6 +111,17 @@ CUSTOM_WORDS = {
 # 停用(禁用)词文件路径
 STOP_WORDS_FILE = "./docs/hit_stopwords.txt"
 
+# 词云热词配置（兼容旧版入库逻辑）
+HOTWORDS_TOP_N = 20
+HOTWORDS_MIN_COUNT = 1
+
+# 情感分析配置
+SENTI_ENABLED = True
+SENTI_DIR_PATH = "./data/sentiment"
+SENTI_USE_REDIS = True
+SENTI_REDIS_PREFIX = "weibo:senti:"
+SENTI_CACHE_TTL = 60
+
 # 中文字体文件路径
 FONT_PATH = "./docs/STZHONGS.TTF"
 

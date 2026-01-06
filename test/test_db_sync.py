@@ -34,8 +34,15 @@ from database.models import Base
 
 def get_mysql_engine():
     """Create and return a MySQL database engine"""
-    conn_str = f"mysql+pymysql://{mysql_db_config['user']}:{mysql_db_config['password']}@{mysql_db_config['host']}:{mysql_db_config['port']}/{mysql_db_config['db_name']}"
-    return create_engine(conn_str)
+    from database.db_utils import create_mysql_engine_safe
+
+    return create_mysql_engine_safe(
+        host=mysql_db_config['host'],
+        port=mysql_db_config['port'],
+        user=mysql_db_config['user'],
+        password=mysql_db_config['password'],
+        database=mysql_db_config['db_name'],
+    )
 
 def get_sqlite_engine():
     """Create and return a SQLite database engine"""

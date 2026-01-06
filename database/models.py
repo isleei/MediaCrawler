@@ -16,7 +16,7 @@
 # 详细许可条款请参阅项目根目录下的LICENSE文件。
 # 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
-from sqlalchemy import create_engine, Column, Integer, Text, String, BigInteger
+from sqlalchemy import create_engine, Column, Integer, Text, String, BigInteger, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -250,6 +250,57 @@ class WeiboNoteComment(Base):
     comment_like_count = Column(Text)
     sub_comment_count = Column(Text)
     parent_comment_id = Column(String(255))
+
+class WeiboContent(Base):
+    __tablename__ = "web_weibocontent"
+
+    content_id = Column(String(255), primary_key=True)
+    spider_id = Column(String(50))
+    content_text = Column(String(5000))
+    reposts_count = Column(String(20))
+    comments_count = Column(String(20))
+    attitudes_count = Column(String(20))
+    create_user = Column(String(50))
+    weibo_url = Column(String(200))
+    created_at = Column(DateTime)
+    update_at = Column(DateTime)
+    senti_score = Column(Integer)
+    retweeted = Column(Integer)
+    content_type = Column(Integer)
+
+
+class WeiboContentHotword(Base):
+    __tablename__ = "web_weibocontenthotwords"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    content_id = Column(String(100), index=True)
+    word = Column(String(50))
+    weight = Column(Integer)
+
+
+class WeiboPinglun(Base):
+    __tablename__ = "web_weibopinglun"
+
+    pinglun_id = Column(String(100), primary_key=True)
+    pinglun_parent_id = Column(String(100))
+    pinglun_text = Column(String(5000))
+    created_at = Column(DateTime)
+    sub_pinglun_count = Column(String(20))
+    like_count = Column(String(20))
+    floor_number = Column(String(20))
+    pinglun_user = Column(String(100))
+    weibo_content_id = Column(String(255))
+    senti_score = Column(Integer)
+    update_at = Column(DateTime)
+
+
+class WeiboPinglunHotword(Base):
+    __tablename__ = "web_weibopinglunhotwords"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pinglun_id = Column(String(100))
+    word = Column(String(50))
+    weight = Column(Integer)
 
 class WeiboCreator(Base):
     __tablename__ = 'weibo_creator'
