@@ -114,7 +114,18 @@ async def update_weibo_note(note_item: Dict):
     user_info: Dict = mblog.get("user")
     note_id = mblog.get("id")
     content_text = mblog.get("text")
+    if mblog.get("isLongText") and mblog.get("longText"):
+        content_text = mblog.get("longText", {}).get("longTextContent", content_text)
     clean_text = re.sub(r"<.*?>", "", content_text)
+    retweeted = 1 if mblog.get("retweeted_status") else 0
+    pic_num = mblog.get("pic_num")
+    obj_ext = mblog.get("obj_ext", "")
+    if isinstance(pic_num, int) and pic_num > 0:
+        content_type = 0
+    elif isinstance(pic_num, int) and pic_num == 0 and obj_ext:
+        content_type = 1
+    else:
+        content_type = 2
     save_content_item = {
         # 微博信息
         "note_id": note_id,
@@ -130,6 +141,8 @@ async def update_weibo_note(note_item: Dict):
         "note_url": f"https://m.weibo.cn/detail/{note_id}",
         "ip_location": mblog.get("region_name", "").replace("发布于 ", ""),
         "senti_score": _calc_senti_score(clean_text),
+        "retweeted": retweeted,
+        "content_type": content_type,
 
         # 用户信息
         "user_id": str(user_info.get("id")),

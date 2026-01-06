@@ -91,8 +91,17 @@ class WeiboClient(ProxyRefreshMixin):
 
         ok_code = data.get("ok")
         if ok_code == 0:  # response error
+            msg = data.get("msg", "response error")
+            if msg in ("这里还没有内容", "这里还没有内容哦"):
+                utils.logger.info(
+                    "[WeiboClient.request] empty result %s:%s msg=%s",
+                    method,
+                    url,
+                    msg,
+                )
+                return {}
             utils.logger.error(f"[WeiboClient.request] request {method}:{url} err, res:{data}")
-            raise DataFetchError(data.get("msg", "response error"))
+            raise DataFetchError(msg)
         elif ok_code != 1:  # unknown error
             utils.logger.error(f"[WeiboClient.request] request {method}:{url} err, res:{data}")
             raise DataFetchError(data.get("msg", "unknown error"))

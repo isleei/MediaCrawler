@@ -170,6 +170,13 @@ class WeiboCrawler(AbstractCrawler):
                 search_res = await self.wb_client.get_note_by_keyword(keyword=keyword, page=page, search_type=search_type)
                 note_id_list: List[str] = []
                 note_list = filter_search_result_card(search_res.get("cards"))
+                if not note_list:
+                    utils.logger.info(
+                        "[WeiboCrawler.search] empty result keyword=%s page=%s, stop paging",
+                        keyword,
+                        page,
+                    )
+                    break
                 # If full text fetching is enabled, batch get full text of posts
                 note_list = await self.batch_get_notes_full_text(note_list)
                 for note_item in note_list:

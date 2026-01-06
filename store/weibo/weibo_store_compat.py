@@ -77,15 +77,6 @@ class WeiboCompatStoreImplement(AbstractStore):
         dbname = mysql_db_config["db_name"]
         charset = os.getenv("MYSQL_CHARSET", "utf8mb4")
 
-        # Print MySQL configuration for debugging
-        print(f"\n[WeiboCompatStore] MySQL Configuration:")
-        print(f"  Host: {host}")
-        print(f"  Port: {port}")
-        print(f"  User: {user}")
-        print(f"  Password length: {len(password)} chars")
-        print(f"  Database: {dbname}")
-        print(f"  Charset: {charset}")
-
         # Use shared config with safe password handling
         self._engine = create_mysql_engine_safe(
             host=host,
@@ -130,8 +121,8 @@ class WeiboCompatStoreImplement(AbstractStore):
             "created_at": created_at,
             "update_at": update_at,
             "senti_score": int(content_item.get("senti_score", 0) or 0),
-            "retweeted": 0,
-            "content_type": 2,
+            "retweeted": int(content_item.get("retweeted", 0) or 0),
+            "content_type": int(content_item.get("content_type", 2) or 2),
         }
         hotwords = self._extract_hotwords(payload["content_text"])
         if not self._session_factory:
@@ -415,6 +406,14 @@ class WeiboCompatStoreImplement(AbstractStore):
             with urlrequest.urlopen(req, timeout=10) as resp:
                 return resp.status, resp.read()
         except HTTPError as e:
-            return e.code, e.read()
-        except URLError:
+            body = e.read()
+            utils.logger.warning(
+                "[store.weibo.es] request failed status=%s url=%s body=%s",
+                e.code,
+                url,
+                body[:200] if body else b"",
+            )
+            return e.code, body
+        except URLError as exc:
+            utils.logger.warning("[store.weibo.es] request error url=%s error=%s", url, exc)
             return 0, b""
