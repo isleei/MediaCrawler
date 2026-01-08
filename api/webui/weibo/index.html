@@ -21,7 +21,7 @@
                     📋 爬虫任务
                 </button>
                 <button onclick="switchTab('cookies')" id="tab-cookies" class="tab-btn px-6 py-3 text-sm font-medium text-gray-500 hover:text-gray-700">
-                    🍪 Cookie 管理
+                    🍪 Cookie 包
                 </button>
                 <button onclick="switchTab('sentiment')" id="tab-sentiment" class="tab-btn px-6 py-3 text-sm font-medium text-gray-500 hover:text-gray-700">
                     🧠 词典
@@ -98,73 +98,16 @@
             </div>
         </div>
 
-        <!-- Cookie 管理标签页 -->
+        <!-- Cookie 包管理标签页 -->
         <div id="cookies-tab" class="tab-content hidden">
-            <!-- 添加 Cookie 表单 -->
-            <div class="bg-white rounded-lg shadow p-6 mb-6">
-                <h2 class="text-xl font-semibold mb-4">添加 Cookie</h2>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-2">Cookie 名称</label>
-                        <input type="text" id="cookie-name" placeholder="例如: SUB, SUBP"
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-2">Cookie 值</label>
-                        <input type="text" id="cookie-value" placeholder="Cookie 值"
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                    </div>
-                </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-2">域</label>
-                        <input type="text" id="cookie-domain" value=".weibo.cn"
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-2">路径</label>
-                        <input type="text" id="cookie-path" value="/"
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                    </div>
-                </div>
-                <div class="flex gap-2">
-                    <button onclick="addCookie()"
-                        class="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition-colors font-medium">
-                        ➕ 添加 Cookie
-                    </button>
-                    <button onclick="importBrowserCookies()"
-                        class="bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700 transition-colors font-medium">
-                        🌐 从浏览器导入
-                    </button>
-                </div>
-            </div>
-
-            <!-- Cookie 列表 -->
-            <div class="bg-white rounded-lg shadow p-6">
-                <h2 class="text-xl font-semibold mb-4">Cookie 列表</h2>
-                <div id="cookies-container">
-                    <!-- Cookie 数据将通过 JS 加载 -->
-                </div>
-                <div id="no-cookies" class="text-center py-8 text-gray-500">
-                    暂无 Cookies，请添加
-                </div>
-            </div>
-
-            <!-- 使用说明 -->
-            <div class="bg-blue-50 rounded-lg p-6 mt-6">
-                <h3 class="text-lg font-semibold text-blue-800 mb-2">📖 如何获取微博 Cookie？</h3>
-                <ol class="list-decimal list-inside text-blue-700 space-y-2">
-                    <li>在浏览器中登录微博账号</li>
-                    <li>按 F12 打开开发者工具，切换到 Network 标签</li>
-                    <li>刷新页面，找到任意请求</li>
-                    <li>在 Request Headers 中找到 Cookie</li>
-                    <li>复制完整的 Cookie 字符串，点击"从浏览器导入"按钮</li>
-                </ol>
-            </div>
-
-            <!-- 账号 Cookie 包管理 -->
             <div class="bg-white rounded-lg shadow p-6 mb-6">
                 <h2 class="text-xl font-semibold mb-4">账号 Cookie 包</h2>
+                <div class="mb-3">
+                    <button onclick="validateAllCookieBundles()"
+                        class="bg-gray-100 text-gray-700 px-4 py-2 rounded hover:bg-gray-200 text-sm">
+                        ✅ 校验全部
+                    </button>
+                </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-2">账号名称</label>
@@ -452,7 +395,6 @@
             if (tab === 'tasks') {
                 loadTasks();
             } else if (tab === 'cookies') {
-                loadCookies();
                 loadCookieBundles();
                 loadProxies();
             } else if (tab === 'sentiment') {
@@ -698,6 +640,36 @@
             document.getElementById('logs-modal').classList.add('hidden');
         }
 
+        async function validateCookieBundle(name) {
+            try {
+                const response = await apiFetch(`/cookie_bundles/${encodeURIComponent(name)}/validate`, { method: 'POST' });
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    showToast(result.valid ? 'Cookie 包可用' : 'Cookie 包已过期', result.valid ? 'success' : 'error');
+                    loadCookieBundles();
+                } else {
+                    showToast('校验失败', 'error');
+                }
+            } catch (error) {
+                showToast('校验失败', 'error');
+            }
+        }
+
+        async function validateAllCookieBundles() {
+            try {
+                const response = await apiFetch('/cookie_bundles/validate_all', { method: 'POST' });
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    showToast('Cookie 包校验完成', 'success');
+                    loadCookieBundles();
+                } else {
+                    showToast('校验失败', 'error');
+                }
+            } catch (error) {
+                showToast('校验失败', 'error');
+            }
+        }
+
         // 查看统计
         async function viewStats(taskId) {
             try {
@@ -793,39 +765,6 @@
             return `${secs}s`;
         }
 
-        // 加载 Cookies
-        async function loadCookies() {
-            const response = await apiFetch('/cookies');
-            const cookies = await response.json();
-
-            const container = document.getElementById('cookies-container');
-            const noCookies = document.getElementById('no-cookies');
-
-            if (cookies.length === 0) {
-                container.innerHTML = '';
-                noCookies.classList.remove('hidden');
-                return;
-            }
-
-            noCookies.classList.add('hidden');
-            container.innerHTML = cookies.map(cookie => `
-                <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg mb-3">
-                    <div class="flex-1">
-                        <div class="flex items-center gap-2">
-                            <span class="font-semibold text-gray-900">${cookie.name}</span>
-                            <span class="text-xs text-gray-500">${cookie.domain}</span>
-                        </div>
-                        <div class="text-sm text-gray-600 mt-1 truncate max-w-2xl">${cookie.value}</div>
-                        <div class="text-xs text-gray-400 mt-1">更新时间: ${cookie.updated_at}</div>
-                    </div>
-                    <button onclick="deleteCookie('${cookie.name}')"
-                        class="ml-4 text-red-600 hover:text-red-800 text-sm font-medium">
-                        删除
-                    </button>
-                </div>
-            `).join('');
-        }
-
         async function loadCookieBundles() {
             const response = await apiFetch('/cookie_bundles');
             const bundles = await response.json();
@@ -842,13 +781,23 @@
                     <div class="flex-1">
                         <div class="flex items-center gap-2">
                             <span class="font-semibold text-gray-900">${bundle.name}</span>
+                            <span class="text-xs px-2 py-0.5 rounded-full ${getCookieStatusClass(bundle.status)}">
+                                ${getCookieStatusText(bundle.status)}
+                            </span>
+                            ${String(bundle.enabled) === '0' ? '<span class="text-xs text-red-500">已禁用</span>' : ''}
                         </div>
                         <div class="text-sm text-gray-600 mt-1 truncate max-w-2xl">${bundle.cookie_string}</div>
                         <div class="text-xs text-gray-400 mt-1">UA: ${formatBundleUserAgent(bundle.user_agent)}</div>
                         <div class="text-xs text-gray-400 mt-1">绑定代理: ${formatBundleProxies(bundle.proxies)}</div>
-                        <div class="text-xs text-gray-400 mt-1">更新时间: ${bundle.updated_at || ''}</div>
+                        <div class="text-xs text-gray-400 mt-1">
+                            更新时间: ${bundle.updated_at || ''} ${bundle.last_checked_at ? ` · 校验: ${bundle.last_checked_at}` : ''}
+                        </div>
                     </div>
                     <div class="ml-4 flex flex-col gap-2">
+                        <button onclick="validateCookieBundle('${bundle.name}')"
+                            class="text-teal-600 hover:text-teal-800 text-sm font-medium">
+                            校验
+                        </button>
                         <button onclick="editCookieBundle('${bundle.name}', '${encodeURIComponent(bundle.cookie_string || '')}', '${encodeURIComponent(bundle.proxies || '')}', '${encodeURIComponent(bundle.user_agent || '')}')"
                             class="text-blue-600 hover:text-blue-800 text-sm font-medium">
                             编辑
@@ -1058,96 +1007,6 @@
             document.getElementById('bundle-ua').value = '';
             clearBundleProxySelection();
             clearBundleEditing();
-        }
-
-        // 添加 Cookie
-        async function addCookie() {
-            const name = document.getElementById('cookie-name').value.trim();
-            const value = document.getElementById('cookie-value').value.trim();
-            const domain = document.getElementById('cookie-domain').value.trim();
-            const path = document.getElementById('cookie-path').value.trim();
-
-            if (!name || !value) {
-                showToast('请填写 Cookie 名称和值', 'error');
-                return;
-            }
-
-            try {
-                const response = await apiFetch('/cookies', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, value, domain, path })
-                });
-
-                const result = await response.json();
-
-                if (result.success) {
-                    showToast('Cookie 已添加', 'success');
-                    document.getElementById('cookie-name').value = '';
-                    document.getElementById('cookie-value').value = '';
-                    loadCookies();
-                }
-            } catch (error) {
-                showToast('添加失败', 'error');
-            }
-        }
-
-        // 删除 Cookie
-        async function deleteCookie(name) {
-            if (!confirm(`确定要删除 Cookie "${name}"吗？`)) return;
-
-            try {
-                const response = await apiFetch(`/cookies?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
-                const result = await response.json();
-
-                if (result.success) {
-                    showToast('Cookie 已删除', 'success');
-                    loadCookies();
-                }
-            } catch (error) {
-                showToast('删除失败', 'error');
-            }
-        }
-
-        // 从浏览器导入 Cookie
-        function importBrowserCookies() {
-            const cookieString = prompt('请粘贴完整的 Cookie 字符串：');
-
-            if (!cookieString) return;
-
-            // 解析 Cookie 字符串
-            const cookies = cookieString.split(';').map(c => {
-                const [name, ...values] = c.trim().split('=');
-                return { name: name.trim(), value: values.join('=').trim() };
-            }).filter(c => c.name);
-
-            if (cookies.length === 0) {
-                showToast('Cookie 格式错误', 'error');
-                return;
-            }
-
-            // 批量添加 Cookies
-            let successCount = 0;
-            cookies.forEach(async (cookie) => {
-                try {
-                    const response = await apiFetch('/cookies', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(cookie)
-                    });
-                    const result = await response.json();
-                    if (result.success) successCount++;
-                } catch (e) {}
-            });
-
-            setTimeout(() => {
-                if (successCount > 0) {
-                    showToast(`成功导入 ${successCount} 个 Cookies`, 'success');
-                    loadCookies();
-                } else {
-                    showToast('导入失败', 'error');
-                }
-            }, 500);
         }
 
         // 加载情感词典
@@ -1374,6 +1233,26 @@
                 'stopped': '已停止'
             };
             return texts[status] || status;
+        }
+
+        function getCookieStatusClass(status) {
+            const classes = {
+                ok: 'bg-green-100 text-green-800',
+                expired: 'bg-red-100 text-red-800',
+                error: 'bg-yellow-100 text-yellow-800',
+                unknown: 'bg-gray-100 text-gray-800'
+            };
+            return classes[status] || classes.unknown;
+        }
+
+        function getCookieStatusText(status) {
+            const texts = {
+                ok: '可用',
+                expired: '过期',
+                error: '异常',
+                unknown: '未知'
+            };
+            return texts[status] || '未知';
         }
 
         // Toast 通知

@@ -61,6 +61,22 @@ class WeiboCompatStoreImplement(AbstractStore):
         self._session_factory = None
         self._es_base = None
         self._es_enabled = os.getenv("ES_ENABLED", "1") in ("1", "true", "True")
+        legacy_mysql_flag = os.getenv("WEIBO_MYSQL_ENABLED")
+        if legacy_mysql_flag is not None:
+            legacy_enabled = legacy_mysql_flag in ("1", "true", "True")
+            self._content_mysql_enabled = legacy_enabled
+            self._comment_mysql_enabled = legacy_enabled
+        else:
+            self._content_mysql_enabled = os.getenv("WEIBO_CONTENT_MYSQL_ENABLED", "0") in (
+                "1",
+                "true",
+                "True",
+            )
+            self._comment_mysql_enabled = os.getenv("WEIBO_COMMENT_MYSQL_ENABLED", "0") in (
+                "1",
+                "true",
+                "True",
+            )
         self._extraction_client = None
         self._extraction_ready = False
         self._extraction_lock = threading.Lock()
@@ -185,59 +201,70 @@ class WeiboCompatStoreImplement(AbstractStore):
             "content_type": int(content_item.get("content_type", 2) or 2),
         }
         hotwords = self._extract_hotwords(payload["content_text"])
-        if not self._session_factory:
-            utils.logger.warning("[WeiboCompatStore] Session factory not initialized")
-            return
-        session = self._session_factory()
-        inserted = False
-        try:
-            existing = session.get(WeiboContent, content_id)
-            if existing:
-                # Check if there are actual changes
-                has_changes = False
-                for key, value in payload.items():
-                    if getattr(existing, key, None) != value:
-                        has_changes = True
-                        break
+        inserted = True
+        if self._session_factory:
+            session = self._session_factory()
+            inserted = False
+            try:
+                if self._content_mysql_enabled:
+                    existing = session.get(WeiboContent, content_id)
+                    if existing:
+                        # Check if there are actual changes
+                        has_changes = False
+                        for key, value in payload.items():
+                            if getattr(existing, key, None) != value:
+                                has_changes = True
+                                break
 
-                for key, value in payload.items():
-                    setattr(existing, key, value)
+                        for key, value in payload.items():
+                            setattr(existing, key, value)
 
-                if has_changes:
-                    utils.logger.info(f"[WeiboCompatStore] Updated content: {content_id} (有数据变化)")
+                        if has_changes:
+                            utils.logger.info(
+                                f"[WeiboCompatStore] Updated content: {content_id} (有数据变化)"
+                            )
+                        else:
+                            utils.logger.info(
+                                f"[WeiboCompatStore] Updated content: {content_id} (无数据变化，仅刷新时间戳)"
+                            )
+                    else:
+                        session.add(WeiboContent(**payload))
+                        inserted = True
+                        utils.logger.info(f"[WeiboCompatStore] Inserted new content: {content_id} ✨")
                 else:
-                    utils.logger.info(f"[WeiboCompatStore] Updated content: {content_id} (无数据变化，仅刷新时间戳)")
-            else:
-                session.add(WeiboContent(**payload))
-                inserted = True
-                utils.logger.info(f"[WeiboCompatStore] Inserted new content: {content_id} ✨")
+                    inserted = True
+                    utils.logger.info("[WeiboCompatStore] Skip content table write (MySQL disabled)")
 
-            session.query(WeiboContentHotword).filter(
-                WeiboContentHotword.content_id == content_id
-            ).delete(synchronize_session=False)
-            if hotwords:
-                session.bulk_save_objects(
-                    [
-                        WeiboContentHotword(
-                            content_id=content_id,
-                            word=item["word"],
-                            weight=item["weight"],
-                        )
-                        for item in hotwords
-                    ]
-                )
-                utils.logger.debug(f"[WeiboCompatStore] Saved {len(hotwords)} hotwords for {content_id}")
-            session.commit()
-            utils.logger.info(f"[WeiboCompatStore] Successfully committed content: {content_id}")
-        except Exception as e:
-            session.rollback()
-            utils.logger.error(f"[WeiboCompatStore] Failed to store content {content_id}: {e}")
-            raise
-        finally:
-            session.close()
+                session.query(WeiboContentHotword).filter(
+                    WeiboContentHotword.content_id == content_id
+                ).delete(synchronize_session=False)
+                if hotwords:
+                    session.bulk_save_objects(
+                        [
+                            WeiboContentHotword(
+                                content_id=content_id,
+                                word=item["word"],
+                                weight=item["weight"],
+                            )
+                            for item in hotwords
+                        ]
+                    )
+                    utils.logger.debug(
+                        f"[WeiboCompatStore] Saved {len(hotwords)} hotwords for {content_id}"
+                    )
+                session.commit()
+                utils.logger.info(f"[WeiboCompatStore] Successfully committed content: {content_id}")
+            except Exception as e:
+                session.rollback()
+                utils.logger.error(f"[WeiboCompatStore] Failed to store content {content_id}: {e}")
+                raise
+            finally:
+                session.close()
+            self._save_extraction(content_item, payload["content_text"])
+        else:
+            utils.logger.warning("[WeiboCompatStore] Session factory not initialized")
 
         self._incr_stat("content_inserted" if inserted else "content_updated")
-        self._save_extraction(content_item, payload["content_text"])
         self._es_index(
             os.getenv("ES_INDEX_WEIBO", "weibocontent"),
             content_id,
@@ -373,56 +400,67 @@ class WeiboCompatStoreImplement(AbstractStore):
             "update_at": update_at,
         }
         hotwords = self._extract_hotwords(payload["pinglun_text"])
-        if not self._session_factory:
-            utils.logger.warning("[WeiboCompatStore] Session factory not initialized")
-            return
-        session = self._session_factory()
-        inserted = False
-        try:
-            existing = session.get(WeiboPinglun, pinglun_id)
-            if existing:
-                # Check if there are actual changes
-                has_changes = False
-                for key, value in payload.items():
-                    if getattr(existing, key, None) != value:
-                        has_changes = True
-                        break
+        inserted = True
+        if self._session_factory:
+            session = self._session_factory()
+            inserted = False
+            try:
+                if self._comment_mysql_enabled:
+                    existing = session.get(WeiboPinglun, pinglun_id)
+                    if existing:
+                        # Check if there are actual changes
+                        has_changes = False
+                        for key, value in payload.items():
+                            if getattr(existing, key, None) != value:
+                                has_changes = True
+                                break
 
-                for key, value in payload.items():
-                    setattr(existing, key, value)
+                        for key, value in payload.items():
+                            setattr(existing, key, value)
 
-                if has_changes:
-                    utils.logger.info(f"[WeiboCompatStore] Updated comment: {pinglun_id} (有数据变化)")
+                        if has_changes:
+                            utils.logger.info(
+                                f"[WeiboCompatStore] Updated comment: {pinglun_id} (有数据变化)"
+                            )
+                        else:
+                            utils.logger.info(
+                                f"[WeiboCompatStore] Updated comment: {pinglun_id} (无数据变化，仅刷新时间戳)"
+                            )
+                    else:
+                        session.add(WeiboPinglun(**payload))
+                        inserted = True
+                        utils.logger.info(f"[WeiboCompatStore] Inserted new comment: {pinglun_id} ✨")
                 else:
-                    utils.logger.info(f"[WeiboCompatStore] Updated comment: {pinglun_id} (无数据变化，仅刷新时间戳)")
-            else:
-                session.add(WeiboPinglun(**payload))
-                inserted = True
-                utils.logger.info(f"[WeiboCompatStore] Inserted new comment: {pinglun_id} ✨")
+                    inserted = True
+                    utils.logger.info("[WeiboCompatStore] Skip comment table write (MySQL disabled)")
 
-            session.query(WeiboPinglunHotword).filter(
-                WeiboPinglunHotword.pinglun_id == pinglun_id
-            ).delete(synchronize_session=False)
-            if hotwords:
-                session.bulk_save_objects(
-                    [
-                        WeiboPinglunHotword(
-                            pinglun_id=pinglun_id,
-                            word=item["word"],
-                            weight=item["weight"],
-                        )
-                        for item in hotwords
-                    ]
-                )
-                utils.logger.debug(f"[WeiboCompatStore] Saved {len(hotwords)} hotwords for comment {pinglun_id}")
-            session.commit()
-            utils.logger.info(f"[WeiboCompatStore] Successfully committed comment: {pinglun_id}")
-        except Exception as e:
-            session.rollback()
-            utils.logger.error(f"[WeiboCompatStore] Failed to store comment {pinglun_id}: {e}")
-            raise
-        finally:
-            session.close()
+                session.query(WeiboPinglunHotword).filter(
+                    WeiboPinglunHotword.pinglun_id == pinglun_id
+                ).delete(synchronize_session=False)
+                if hotwords:
+                    session.bulk_save_objects(
+                        [
+                            WeiboPinglunHotword(
+                                pinglun_id=pinglun_id,
+                                word=item["word"],
+                                weight=item["weight"],
+                            )
+                            for item in hotwords
+                        ]
+                    )
+                    utils.logger.debug(
+                        f"[WeiboCompatStore] Saved {len(hotwords)} hotwords for comment {pinglun_id}"
+                    )
+                session.commit()
+                utils.logger.info(f"[WeiboCompatStore] Successfully committed comment: {pinglun_id}")
+            except Exception as e:
+                session.rollback()
+                utils.logger.error(f"[WeiboCompatStore] Failed to store comment {pinglun_id}: {e}")
+                raise
+            finally:
+                session.close()
+        else:
+            utils.logger.warning("[WeiboCompatStore] Session factory not initialized")
 
         self._incr_stat("comment_inserted" if inserted else "comment_updated")
         self._es_index(

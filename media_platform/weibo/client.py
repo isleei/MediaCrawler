@@ -25,11 +25,14 @@
 import asyncio
 import copy
 import json
+import os
 import re
+from datetime import datetime
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union
 from urllib.parse import parse_qs, unquote, urlencode
 
 import httpx
+import redis
 from httpx import Response
 from playwright.async_api import BrowserContext, Page
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -156,6 +159,41 @@ class WeiboClient(ProxyRefreshMixin):
         self.headers["Cookie"] = cookie_str
         self.cookie_dict = cookie_dict
         utils.logger.info(f"[WeiboClient.update_cookies] Cookie updated successfully, total: {len(cookie_dict)} cookies")
+        self._sync_cookie_bundle(cookie_str)
+
+    def _sync_cookie_bundle(self, cookie_str: str):
+        bundle_name = os.getenv("CRAWLER_COOKIE_BUNDLE_NAME", "").strip()
+        if not bundle_name or not cookie_str:
+            return
+        try:
+            client = redis.Redis(
+                host=os.getenv("REDIS_HOST", "127.0.0.1"),
+                port=int(os.getenv("REDIS_PORT", "6379")),
+                db=int(os.getenv("REDIS_DB", "0")),
+                password=os.getenv("REDIS_PASSWORD") or None,
+                decode_responses=True,
+            )
+            prefix = os.getenv("COOKIE_BUNDLE_PREFIX", "weibo:cookie:bundle:")
+            index_list = os.getenv("COOKIE_BUNDLE_INDEX_LIST", "weibo:cookie:bundles")
+            index_set = os.getenv("COOKIE_BUNDLE_INDEX_SET", "weibo:cookie:bundles:set")
+            key = f"{prefix}{bundle_name}"
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            client.hset(
+                key,
+                mapping={
+                    "cookie_string": cookie_str,
+                    "updated_at": now,
+                    "enabled": "1",
+                    "status": "ok",
+                },
+            )
+            if client.sadd(index_set, bundle_name):
+                client.rpush(index_list, bundle_name)
+            utils.logger.info(
+                "[WeiboClient.update_cookies] Synced cookies to bundle: %s", bundle_name
+            )
+        except Exception as exc:
+            utils.logger.warning("[WeiboClient.update_cookies] Sync bundle failed: %s", exc)
 
     async def get_note_by_keyword(
         self,

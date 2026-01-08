@@ -29,6 +29,7 @@ from logging.handlers import RotatingFileHandler
 from urllib.parse import parse_qs, unquote, urlparse
 
 import redis
+import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -325,12 +326,16 @@ def get_cookie(name):
     data = redis_client.hgetall(cookie_key(name))
     if not data:
         return None
+    data.setdefault("enabled", "1")
+    data.setdefault("status", "unknown")
     return dict(data)
 
 
 def save_cookie(name, payload):
     key = cookie_key(name)
     payload = {k: str(v) for k, v in payload.items()}
+    payload.setdefault("enabled", "1")
+    payload.setdefault("status", "unknown")
     redis_client.hset(key, mapping=payload)
     if redis_client.sadd(COOKIE_INDEX_SET, name):
         redis_client.rpush(COOKIE_INDEX_LIST, name)
@@ -357,32 +362,38 @@ def get_cookie_bundle(name):
     return dict(data)
 
 
-def build_cookie_string_from_pairs():
-    cookies = list_cookies()
-    if not cookies:
-        return ""
-    parts = []
-    for cookie in cookies:
-        name = cookie.get("name")
-        value = cookie.get("value")
-        if name and value:
-            parts.append(f"{name}={value}")
-    return "; ".join(parts)
-
-
 def get_cookie_string(preferred_bundle_name=""):
-    if preferred_bundle_name:
-        bundle = get_cookie_bundle(preferred_bundle_name)
+    bundle_name = get_cookie_bundle_name(preferred_bundle_name)
+    if bundle_name:
+        bundle = get_cookie_bundle(bundle_name)
         if bundle and bundle.get("cookie_string"):
             return bundle["cookie_string"]
+
+    return ""
+
+
+def get_cookie_bundle_name(preferred_bundle_name=""):
+    if preferred_bundle_name:
+        bundle = get_cookie_bundle(preferred_bundle_name)
+        if bundle and bundle.get("cookie_string") and bundle.get("enabled", "1") not in (
+            "0",
+            "false",
+            "False",
+        ):
+            return preferred_bundle_name
 
     names = redis_client.lrange(COOKIE_BUNDLE_INDEX_LIST, 0, -1)
     if names:
-        bundle = get_cookie_bundle(names[-1])
-        if bundle and bundle.get("cookie_string"):
-            return bundle["cookie_string"]
+        for name in reversed(names):
+            bundle = get_cookie_bundle(name)
+            if bundle and bundle.get("cookie_string") and bundle.get("enabled", "1") not in (
+                "0",
+                "false",
+                "False",
+            ):
+                return name
 
-    return build_cookie_string_from_pairs()
+    return ""
 
 
 def remove_sentiment_word(word_type, word):
@@ -405,6 +416,8 @@ def list_cookie_bundles():
     for name in names:
         data = redis_client.hgetall(cookie_bundle_key(name))
         if data:
+            data.setdefault("enabled", "1")
+            data.setdefault("status", "unknown")
             bundles.append(data)
     return bundles
 
@@ -423,6 +436,8 @@ def save_cookie_bundle(name, cookie_string, proxies, user_agent=""):
         "proxies": proxies_value,
         "user_agent": str(user_agent or ""),
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "enabled": "1",
+        "status": "unknown",
     }
     redis_client.hset(key, mapping=payload)
     if redis_client.sadd(COOKIE_BUNDLE_INDEX_SET, name):
@@ -433,6 +448,38 @@ def delete_cookie_bundle(name):
     redis_client.delete(cookie_bundle_key(name))
     redis_client.lrem(COOKIE_BUNDLE_INDEX_LIST, 0, name)
     redis_client.srem(COOKIE_BUNDLE_INDEX_SET, name)
+
+
+def _validate_cookie_string(cookie_string, user_agent=""):
+    if not cookie_string:
+        return False, "empty_cookie"
+    headers = {"Cookie": cookie_string, "Accept": "application/json"}
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    try:
+        resp = httpx.get("https://m.weibo.cn/api/config", headers=headers, timeout=10)
+        data = resp.json() if resp.text else {}
+    except Exception as exc:
+        return False, f"request_failed:{exc}"
+    login_flag = False
+    if isinstance(data, dict):
+        login_flag = bool((data.get("data") or {}).get("login") or data.get("login"))
+    return login_flag, "ok" if login_flag else "expired"
+
+
+def _update_cookie_bundle_status(name, enabled, status, reason=""):
+    key = cookie_bundle_key(name)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mapping = {
+        "enabled": "1" if enabled else "0",
+        "status": status,
+        "last_checked_at": now,
+    }
+    if reason:
+        mapping["last_check_reason"] = reason
+    redis_client.hset(key, mapping=mapping)
+
+
 
 
 def list_proxies():
@@ -550,6 +597,7 @@ def start_task(task_id, keyword, max_pages):
         redis_client.delete(log_key)
 
         try:
+            cookie_bundle_name = get_cookie_bundle_name(DEFAULT_COOKIE_BUNDLE_NAME)
             cookie_string = get_cookie_string(DEFAULT_COOKIE_BUNDLE_NAME)
             cmd = _build_crawler_cmd(
                 keyword=keyword,
@@ -569,6 +617,7 @@ def start_task(task_id, keyword, max_pages):
                     **os.environ,
                     "CRAWLER_TASK_ID": str(task_id),
                     "CRAWLER_TASK_SOURCE": "ui",
+                    "CRAWLER_COOKIE_BUNDLE_NAME": cookie_bundle_name or "",
                 },
                 start_new_session=True,
             )
@@ -633,9 +682,9 @@ def start_task_spider(task_id, url, lock_id=None):
         max_pages = int(os.getenv("DEFAULT_MAX_PAGES", str(DEFAULT_PAGE_SIZE)))
         with_comments = os.getenv("MONITOR_DEFAULT_WITH_COMMENTS", "1")
         with_comments_enabled = str(with_comments) in ("1", "true", "True")
-        cookie_string = get_cookie_string(
-            MONITOR_COOKIE_BUNDLE_NAME or DEFAULT_COOKIE_BUNDLE_NAME
-        )
+        preferred_bundle = MONITOR_COOKIE_BUNDLE_NAME or DEFAULT_COOKIE_BUNDLE_NAME
+        cookie_bundle_name = get_cookie_bundle_name(preferred_bundle)
+        cookie_string = get_cookie_string(preferred_bundle)
         base_cmd = shlex.split(TASK_SPIDER_CMD)
         cmd = base_cmd + [
             "--keywords",
@@ -660,6 +709,7 @@ def start_task_spider(task_id, url, lock_id=None):
                 **os.environ,
                 "CRAWLER_TASK_ID": str(task_id),
                 "CRAWLER_TASK_SOURCE": "monitor",
+                "CRAWLER_COOKIE_BUNDLE_NAME": cookie_bundle_name or "",
             },
         )
         app_logger.info("spawn task spider pid=%s cmd=%s", process.pid, " ".join(cmd))
@@ -758,6 +808,43 @@ async def delete_cookie_bundle_route(name: str):
     if name:
         delete_cookie_bundle(name)
     return {"success": True, "bundles": list_cookie_bundles()}
+
+
+@router.post("/cookie_bundles/{name}/validate")
+async def validate_cookie_bundle(name: str):
+    bundle = get_cookie_bundle(name)
+    if not bundle:
+        return JSONResponse({"success": False, "error": "not_found"}, status_code=404)
+    ok, status = _validate_cookie_string(
+        bundle.get("cookie_string", ""), bundle.get("user_agent", "")
+    )
+    if ok:
+        _update_cookie_bundle_status(name, True, "ok")
+    elif status == "expired":
+        _update_cookie_bundle_status(name, False, "expired")
+    else:
+        _update_cookie_bundle_status(name, True, "error", status)
+    return {"success": True, "name": name, "valid": ok, "status": status}
+
+
+@router.post("/cookie_bundles/validate_all")
+async def validate_all_cookie_bundles():
+    results = []
+    for bundle in list_cookie_bundles():
+        name = bundle.get("name")
+        ok, status = _validate_cookie_string(
+            bundle.get("cookie_string", ""), bundle.get("user_agent", "")
+        )
+        if ok:
+            _update_cookie_bundle_status(name, True, "ok")
+        elif status == "expired":
+            _update_cookie_bundle_status(name, False, "expired")
+        else:
+            _update_cookie_bundle_status(name, True, "error", status)
+        results.append({"name": name, "valid": ok, "status": status})
+    return {"success": True, "results": results}
+
+
 
 
 @router.get("/proxies")
