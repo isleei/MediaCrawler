@@ -24,6 +24,7 @@
 
 import asyncio
 import os
+import redis
 # import random  # Removed as we now use fixed config.CRAWLER_MAX_SLEEP_SEC intervals
 from asyncio import Task
 from typing import Dict, List, Optional, Tuple
@@ -64,6 +65,44 @@ class WeiboCrawler(AbstractCrawler):
         self.mobile_user_agent = utils.get_mobile_user_agent()
         self.cdp_manager = None
         self.ip_proxy_pool = None  # Proxy IP pool for automatic proxy refresh
+        self._stats_client = None
+        self._stats_key = ""
+        self._init_task_stats()
+
+    def _init_task_stats(self):
+        task_id = os.getenv("CRAWLER_TASK_ID", "").strip()
+        if not task_id:
+            return
+        try:
+            self._stats_client = redis.Redis(
+                host=os.getenv("REDIS_HOST", "127.0.0.1"),
+                port=int(os.getenv("REDIS_PORT", "6379")),
+                db=int(os.getenv("REDIS_DB", "0")),
+                password=os.getenv("REDIS_PASSWORD") or None,
+                decode_responses=True,
+            )
+            prefix = os.getenv("TASK_STATS_PREFIX", "weibo:task:stats:")
+            self._stats_key = f"{prefix}{task_id}"
+        except Exception as exc:
+            utils.logger.warning("[WeiboCrawler.stats] init failed: %s", exc)
+            self._stats_client = None
+            self._stats_key = ""
+
+    def _incr_task_stat(self, field):
+        if not self._stats_client or not self._stats_key:
+            return
+        try:
+            self._stats_client.hincrby(self._stats_key, field, 1)
+        except Exception as exc:
+            utils.logger.warning("[WeiboCrawler.stats] update failed: %s", exc)
+
+    def _add_task_stat_float(self, field, value):
+        if not self._stats_client or not self._stats_key:
+            return
+        try:
+            self._stats_client.hincrbyfloat(self._stats_key, field, float(value))
+        except Exception as exc:
+            utils.logger.warning("[WeiboCrawler.stats] update failed: %s", exc)
 
     async def start(self):
         playwright_proxy_format, httpx_proxy_format = None, None
@@ -167,7 +206,13 @@ class WeiboCrawler(AbstractCrawler):
                     page += 1
                     continue
                 utils.logger.info(f"[WeiboCrawler.search] search weibo keyword: {keyword}, page: {page}")
-                search_res = await self.wb_client.get_note_by_keyword(keyword=keyword, page=page, search_type=search_type)
+                t0 = asyncio.get_event_loop().time()
+                search_res = await self.wb_client.get_note_by_keyword(
+                    keyword=keyword, page=page, search_type=search_type
+                )
+                self._add_task_stat_float(
+                    "search_seconds", asyncio.get_event_loop().time() - t0
+                )
                 note_id_list: List[str] = []
                 note_list = filter_search_result_card(search_res.get("cards"))
                 if not note_list:
@@ -177,8 +222,13 @@ class WeiboCrawler(AbstractCrawler):
                         page,
                     )
                     break
+                self._incr_task_stat("pages_crawled")
                 # If full text fetching is enabled, batch get full text of posts
+                t1 = asyncio.get_event_loop().time()
                 note_list = await self.batch_get_notes_full_text(note_list)
+                self._add_task_stat_float(
+                    "full_text_seconds", asyncio.get_event_loop().time() - t1
+                )
                 for note_item in note_list:
                     if note_item:
                         mblog: Dict = note_item.get("mblog")
@@ -190,10 +240,16 @@ class WeiboCrawler(AbstractCrawler):
                 page += 1
 
                 # Sleep after page navigation
-                await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
+                sleep_sec = config.CRAWLER_MAX_SLEEP_SEC
+                await asyncio.sleep(sleep_sec)
+                self._add_task_stat_float("sleep_seconds", sleep_sec)
                 utils.logger.info(f"[WeiboCrawler.search] Sleeping for {config.CRAWLER_MAX_SLEEP_SEC} seconds after page {page-1}")
 
+                t2 = asyncio.get_event_loop().time()
                 await self.batch_get_notes_comments(note_id_list)
+                self._add_task_stat_float(
+                    "comments_seconds", asyncio.get_event_loop().time() - t2
+                )
 
     async def get_specified_notes(self):
         """

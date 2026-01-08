@@ -21,6 +21,8 @@ import json
 import os
 import re
 import socket
+import threading
+import time
 from datetime import datetime
 from urllib import request as urlrequest
 from urllib.error import HTTPError, URLError
@@ -28,6 +30,7 @@ from urllib.parse import quote
 
 import jieba
 from sqlalchemy.orm import sessionmaker
+import redis
 
 import config
 from base.base_crawler import AbstractStore
@@ -60,7 +63,12 @@ class WeiboCompatStoreImplement(AbstractStore):
         self._es_enabled = os.getenv("ES_ENABLED", "1") in ("1", "true", "True")
         self._extraction_client = None
         self._extraction_ready = False
+        self._extraction_lock = threading.Lock()
+        self._extraction_last_ts = 0.0
+        self._stats_client = None
+        self._stats_key = ""
         self._init_db()
+        self._init_stats_client()
         self._init_extraction_client()
         self._init_es()
 
@@ -106,6 +114,33 @@ class WeiboCompatStoreImplement(AbstractStore):
         self._es_base = host
         self._ensure_index(os.getenv("ES_INDEX_WEIBO", "weibocontent"), _weibocontent_mappings)
         self._ensure_index(os.getenv("ES_INDEX_PINGLUN", "weibopinglun"), _weibopinglun_mappings)
+
+    def _init_stats_client(self):
+        task_id = os.getenv("CRAWLER_TASK_ID", "").strip()
+        if not task_id:
+            return
+        try:
+            self._stats_client = redis.Redis(
+                host=os.getenv("REDIS_HOST", "127.0.0.1"),
+                port=int(os.getenv("REDIS_PORT", "6379")),
+                db=int(os.getenv("REDIS_DB", "0")),
+                password=os.getenv("REDIS_PASSWORD") or None,
+                decode_responses=True,
+            )
+            prefix = os.getenv("TASK_STATS_PREFIX", "weibo:task:stats:")
+            self._stats_key = f"{prefix}{task_id}"
+        except Exception as exc:
+            utils.logger.warning("[store.weibo.stats] init failed: %s", exc)
+            self._stats_client = None
+            self._stats_key = ""
+
+    def _incr_stat(self, field):
+        if not self._stats_client or not self._stats_key:
+            return
+        try:
+            self._stats_client.hincrby(self._stats_key, field, 1)
+        except Exception as exc:
+            utils.logger.warning("[store.weibo.stats] update failed: %s", exc)
 
     def _init_extraction_client(self):
         if not config.WEIBO_EXTRACTION_ENABLED:
@@ -154,6 +189,7 @@ class WeiboCompatStoreImplement(AbstractStore):
             utils.logger.warning("[WeiboCompatStore] Session factory not initialized")
             return
         session = self._session_factory()
+        inserted = False
         try:
             existing = session.get(WeiboContent, content_id)
             if existing:
@@ -173,6 +209,7 @@ class WeiboCompatStoreImplement(AbstractStore):
                     utils.logger.info(f"[WeiboCompatStore] Updated content: {content_id} (无数据变化，仅刷新时间戳)")
             else:
                 session.add(WeiboContent(**payload))
+                inserted = True
                 utils.logger.info(f"[WeiboCompatStore] Inserted new content: {content_id} ✨")
 
             session.query(WeiboContentHotword).filter(
@@ -199,6 +236,7 @@ class WeiboCompatStoreImplement(AbstractStore):
         finally:
             session.close()
 
+        self._incr_stat("content_inserted" if inserted else "content_updated")
         self._save_extraction(content_item, payload["content_text"])
         self._es_index(
             os.getenv("ES_INDEX_WEIBO", "weibocontent"),
@@ -242,7 +280,14 @@ class WeiboCompatStoreImplement(AbstractStore):
             if exists:
                 return
             options = {"type": config.WEIBO_EXTRACTION_TYPE}
+            self._extraction_throttle()
             result = self._extraction_client.commentTag(text, options)
+            if isinstance(result, dict) and result.get("error_code") in (17, 18):
+                utils.logger.warning(
+                    "[store.weibo.extraction] baidu limited: %s",
+                    result.get("error_msg"),
+                )
+                return
             items = result.get("items") if isinstance(result, dict) else None
             if not items:
                 return
@@ -290,6 +335,17 @@ class WeiboCompatStoreImplement(AbstractStore):
         finally:
             session.close()
 
+    def _extraction_throttle(self):
+        min_interval = max(0.0, float(config.WEIBO_EXTRACTION_MIN_INTERVAL_SEC))
+        if min_interval <= 0:
+            return
+        with self._extraction_lock:
+            now = time.time()
+            sleep_for = min_interval - (now - self._extraction_last_ts)
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            self._extraction_last_ts = time.time()
+
     def _store_comment_sync(self, comment_item: dict):
         note_id = comment_item.get("note_id")
         comment_id = comment_item.get("comment_id")
@@ -321,6 +377,7 @@ class WeiboCompatStoreImplement(AbstractStore):
             utils.logger.warning("[WeiboCompatStore] Session factory not initialized")
             return
         session = self._session_factory()
+        inserted = False
         try:
             existing = session.get(WeiboPinglun, pinglun_id)
             if existing:
@@ -340,6 +397,7 @@ class WeiboCompatStoreImplement(AbstractStore):
                     utils.logger.info(f"[WeiboCompatStore] Updated comment: {pinglun_id} (无数据变化，仅刷新时间戳)")
             else:
                 session.add(WeiboPinglun(**payload))
+                inserted = True
                 utils.logger.info(f"[WeiboCompatStore] Inserted new comment: {pinglun_id} ✨")
 
             session.query(WeiboPinglunHotword).filter(
@@ -366,6 +424,7 @@ class WeiboCompatStoreImplement(AbstractStore):
         finally:
             session.close()
 
+        self._incr_stat("comment_inserted" if inserted else "comment_updated")
         self._es_index(
             os.getenv("ES_INDEX_PINGLUN", "weibopinglun"),
             pinglun_id,

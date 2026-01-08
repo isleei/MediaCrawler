@@ -71,6 +71,7 @@ TASK_INDEX_SET = os.getenv("TASK_INDEX_SET", "weibo:tasks:set")
 TASK_LOG_PREFIX = os.getenv("TASK_LOG_PREFIX", "weibo:task:logs:")
 REDIS_TASK_DATA_PREFIX = os.getenv("REDIS_TASK_DATA_PREFIX", "weibo:task:data:")
 SENTI_REDIS_PREFIX = os.getenv("SENTI_REDIS_PREFIX", "weibo:senti:")
+TASK_STATS_PREFIX = os.getenv("TASK_STATS_PREFIX", "weibo:task:stats:")
 PROXY_INDEX_LIST = os.getenv("PROXY_INDEX_LIST", "weibo:proxies")
 PROXY_INDEX_SET = os.getenv("PROXY_INDEX_SET", "weibo:proxies:set")
 TASK_SPIDER_AUTOSTART = os.getenv("MONITOR_SPIDER_AUTOSTART", "1") not in (
@@ -138,6 +139,10 @@ def task_data_key(task_id):
     return f"{REDIS_TASK_DATA_PREFIX}{task_id}"
 
 
+def task_stats_key(task_id):
+    return f"{TASK_STATS_PREFIX}{task_id}"
+
+
 def cookie_bundle_key(name):
     return f"{COOKIE_BUNDLE_PREFIX}{name}"
 
@@ -154,6 +159,7 @@ def save_task(task):
     if redis_client.sadd(TASK_INDEX_SET, str(task_id)):
         redis_client.rpush(TASK_INDEX_LIST, str(task_id))
     redis_client.delete(task_log_key(task_id))
+    redis_client.delete(task_stats_key(task_id))
 
 
 def update_task(task_id, mapping):
@@ -538,6 +544,11 @@ def start_task(task_id, keyword, max_pages):
 
     def _run():
         task = get_task(task_id) or {}
+
+        # Clear old logs before starting new task
+        log_key = task_log_key(task_id)
+        redis_client.delete(log_key)
+
         try:
             cookie_string = get_cookie_string(DEFAULT_COOKIE_BUNDLE_NAME)
             cmd = _build_crawler_cmd(
@@ -554,6 +565,11 @@ def start_task(task_id, keyword, max_pages):
                 stderr=subprocess.STDOUT,
                 text=True,
                 cwd=ROOT_DIR,
+                env={
+                    **os.environ,
+                    "CRAWLER_TASK_ID": str(task_id),
+                    "CRAWLER_TASK_SOURCE": "ui",
+                },
                 start_new_session=True,
             )
             update_task(
@@ -601,17 +617,18 @@ def stop_task(task_id, pid):
     return True, None
 
 
-def start_task_spider(task_id, url):
+def start_task_spider(task_id, url, lock_id=None):
     if not TASK_SPIDER_AUTOSTART:
         return {"started": False, "reason": "autostart_disabled"}
 
-    lock_key = f"{TASK_SPIDER_LOCK_PREFIX}{task_id}"
+    lock_key = f"{TASK_SPIDER_LOCK_PREFIX}{lock_id or task_id}"
     if not redis_client.set(lock_key, "1", nx=True, ex=3600):
         return {"started": False, "reason": "already_running"}
 
     try:
         log_path = os.path.join(LOG_DIR, f"task_{task_id}.log")
-        log_file = open(log_path, "a", encoding="utf-8")
+        # Clear old log file by opening in write mode
+        log_file = open(log_path, "w", encoding="utf-8")
         keyword = extract_keyword_from_url(url)
         max_pages = int(os.getenv("DEFAULT_MAX_PAGES", str(DEFAULT_PAGE_SIZE)))
         with_comments = os.getenv("MONITOR_DEFAULT_WITH_COMMENTS", "1")
@@ -639,6 +656,11 @@ def start_task_spider(task_id, url):
             stdout=log_file,
             stderr=subprocess.STDOUT,
             cwd=ROOT_DIR,
+            env={
+                **os.environ,
+                "CRAWLER_TASK_ID": str(task_id),
+                "CRAWLER_TASK_SOURCE": "monitor",
+            },
         )
         app_logger.info("spawn task spider pid=%s cmd=%s", process.pid, " ".join(cmd))
 
@@ -927,6 +949,49 @@ async def task_logs(task_id: int, limit: int = 200):
     return {"total": total, "lines": lines}
 
 
+@router.get("/tasks/{task_id}/stats")
+async def task_stats(task_id: int):
+    task = get_task(task_id)
+    duration_seconds = 0
+    if task and task.get("started_at"):
+        try:
+            started = datetime.strptime(task.get("started_at"), "%Y-%m-%d %H:%M:%S")
+            finished_at = task.get("finished_at") or ""
+            if finished_at:
+                finished = datetime.strptime(finished_at, "%Y-%m-%d %H:%M:%S")
+                duration_seconds = max(0, int((finished - started).total_seconds()))
+            else:
+                duration_seconds = max(0, int((datetime.now() - started).total_seconds()))
+        except Exception:
+            duration_seconds = 0
+    data = redis_client.hgetall(task_stats_key(task_id))
+    if not data:
+        return {
+            "pages_crawled": 0,
+            "content_inserted": 0,
+            "content_updated": 0,
+            "comment_inserted": 0,
+            "comment_updated": 0,
+            "duration_seconds": duration_seconds,
+            "search_seconds": 0,
+            "full_text_seconds": 0,
+            "comments_seconds": 0,
+            "sleep_seconds": 0,
+        }
+    return {
+        "pages_crawled": int(data.get("pages_crawled", 0)),
+        "content_inserted": int(data.get("content_inserted", 0)),
+        "content_updated": int(data.get("content_updated", 0)),
+        "comment_inserted": int(data.get("comment_inserted", 0)),
+        "comment_updated": int(data.get("comment_updated", 0)),
+        "duration_seconds": duration_seconds,
+        "search_seconds": float(data.get("search_seconds", 0)),
+        "full_text_seconds": float(data.get("full_text_seconds", 0)),
+        "comments_seconds": float(data.get("comments_seconds", 0)),
+        "sleep_seconds": float(data.get("sleep_seconds", 0)),
+    }
+
+
 @router.get("/tasks/{task_id}/data")
 async def task_data(task_id: int, limit: int = 50, offset: int = 0):
     key = task_data_key(task_id)
@@ -1012,7 +1077,9 @@ async def delete_sentiment(word_type: str, word: str):
 
 
 @router.get("/monitor/tasks")
-async def list_monitor_tasks(ms_types: str = "11", page: int = 1, page_size: int = 50):
+async def list_monitor_tasks(
+    ms_types: str = "11", page: int = 1, page_size: int = 50, keyword: str = ""
+):
     if not monitor_engine:
         app_logger.warning("monitor mysql disabled")
         return JSONResponse({"error": "monitor_mysql_disabled"}, status_code=400)
@@ -1022,25 +1089,33 @@ async def list_monitor_tasks(ms_types: str = "11", page: int = 1, page_size: int
     page_size = min(max(page_size, 1), 200)
     offset = (page - 1) * page_size
 
+    keyword = (keyword or "").strip()
+    where_clause = "where ms_type in :types"
+    if keyword:
+        where_clause += " and (ms_keys like :kw or ms_start_url like :kw)"
+
     sql = text(
-        """
+        f"""
         select ms_id, ms_type, ms_keys, ms_start_url, ms_status, ms_remark,
                ms_create_date, ms_modify_date, valid_start_date, valid_end_date,
                industry, institution_name
         from web_monitorspider
-        where ms_type in :types
+        {where_clause}
         order by ms_modify_date desc
         limit :limit offset :offset
         """
     )
-    count_sql = text("select count(*) as total from web_monitorspider where ms_type in :types")
+    count_sql = text(
+        f"select count(*) as total from web_monitorspider {where_clause}"
+    )
 
     try:
+        params = {"types": tuple(ms_type_list), "limit": page_size, "offset": offset}
+        if keyword:
+            params["kw"] = f"%{keyword}%"
         with monitor_engine.connect() as conn:
-            total = conn.execute(count_sql, {"types": tuple(ms_type_list)}).scalar() or 0
-            rows = conn.execute(
-                sql, {"types": tuple(ms_type_list), "limit": page_size, "offset": offset}
-            ).mappings()
+            total = conn.execute(count_sql, params).scalar() or 0
+            rows = conn.execute(sql, params).mappings()
             tasks = [dict(row) for row in rows]
     except Exception as exc:
         app_logger.error("monitor mysql query failed: %s", exc)
@@ -1086,18 +1161,45 @@ async def enqueue_monitor_task(ms_id: int):
     if not url:
         return JSONResponse({"error": "empty_start_url"}, status_code=400)
 
+    task_id = redis_client.incr(TASK_ID_KEY)
+    keyword = row.get("ms_keys") or extract_keyword_from_url(url) or ""
+    new_task = {
+        "id": task_id,
+        "keyword": keyword,
+        "max_pages": int(os.getenv("DEFAULT_MAX_PAGES", str(DEFAULT_PAGE_SIZE))),
+        "with_comments": 1 if os.getenv("MONITOR_DEFAULT_WITH_COMMENTS", "1") in ("1", "true", "True") else 0,
+        "status": "pending",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "started_at": "",
+        "finished_at": "",
+        "items_count": 0,
+        "output_file": "",
+        "data_key": task_data_key(task_id),
+        "monitor_id": ms_id,
+        "source": "monitor",
+    }
+    save_task(new_task)
+
     redis_key = os.getenv("MONITOR_REDIS_KEY", "weibo_spider:start_urls")
     redis_client.lpush(redis_key, url)
-    app_logger.info("enqueue monitor task %s -> %s", ms_id, url)
-    start_info = start_task_spider(ms_id, url)
+    app_logger.info("enqueue monitor task %s -> %s (task_id=%s)", ms_id, url, task_id)
+    start_info = start_task_spider(task_id, url, lock_id=ms_id)
     task_status = "running" if start_info.get("started") else "pending"
-    upsert_task_from_monitor(row, task_status)
-    append_task_log(ms_id, f"已加入队列: {url}")
+    update_task(
+        task_id,
+        {
+            "status": task_status,
+            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if task_status == "running"
+            else "",
+        },
+    )
+    append_task_log(task_id, f"已加入队列: {url}")
     if start_info.get("started"):
-        append_task_log(ms_id, "爬虫已启动")
+        append_task_log(task_id, "爬虫已启动")
     elif start_info.get("reason") == "already_running":
-        append_task_log(ms_id, "爬虫已在运行")
-    return {"success": True, "queued": url, "spider": start_info}
+        append_task_log(task_id, "爬虫已在运行")
+    return {"success": True, "queued": url, "spider": start_info, "task_id": task_id}
 
 
 @router.get("/logs")

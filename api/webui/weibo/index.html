@@ -51,7 +51,7 @@
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-2">最大页数</label>
-                        <input type="number" id="max-pages" value="5" min="1" max="50"
+                        <input type="number" id="max-pages" value="100" min="1" max="100"
                             class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
                     </div>
                     <div class="flex items-end">
@@ -294,7 +294,7 @@
         <div id="monitor-tab" class="tab-content hidden">
             <div class="bg-white rounded-lg shadow p-6 mb-6">
                 <h2 class="text-xl font-semibold mb-4">后台任务（MonitorSpider）</h2>
-                <div class="grid grid-cols-1 md:grid-cols-6 gap-4 items-end">
+                <div class="grid grid-cols-1 md:grid-cols-7 gap-4 items-end">
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-2">数据源类型</label>
                         <select id="monitor-type"
@@ -311,6 +311,11 @@
                             <option value="42">穷游帖子（42）</option>
                             <option value="5">小红书（5）</option>
                         </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">关键词筛选</label>
+                        <input type="text" id="monitor-keyword" placeholder="关键词/URL片段"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-2">每页数量</label>
@@ -442,6 +447,7 @@
             const tabBtn = document.getElementById(`tab-${tab}`);
             tabBtn.classList.remove('text-gray-500');
             tabBtn.classList.add('text-blue-600', 'border-b-2', 'border-blue-600');
+            localStorage.setItem('weibo-ui-tab', tab);
 
             if (tab === 'tasks') {
                 loadTasks();
@@ -459,6 +465,13 @@
                 loadSystemLogs();
             }
         }
+
+        (function restoreTab() {
+            const saved = localStorage.getItem('weibo-ui-tab');
+            if (saved && document.getElementById(`tab-${saved}`)) {
+                switchTab(saved);
+            }
+        })();
 
         // 加载任务列表
         async function loadTasks() {
@@ -506,6 +519,8 @@
                                 <button onclick="viewComments(${task.id})"
                                     class="text-purple-600 hover:text-purple-800 text-sm font-medium">查看评论</button>
                             ` : ''}
+                            <button onclick="viewStats(${task.id})"
+                                class="text-teal-600 hover:text-teal-800 text-sm font-medium">统计</button>
                             <button onclick="viewLogs(${task.id})"
                                 class="text-gray-600 hover:text-gray-800 text-sm font-medium">查看日志</button>
                             <button onclick="deleteTask(${task.id})"
@@ -681,6 +696,101 @@
 
         function closeLogsModal() {
             document.getElementById('logs-modal').classList.add('hidden');
+        }
+
+        // 查看统计
+        async function viewStats(taskId) {
+            try {
+                const response = await apiFetch(`/tasks/${taskId}/stats`);
+                if (!response.ok) {
+                    showToast('读取统计失败', 'error');
+                    return;
+                }
+                const data = await response.json();
+                showStatsModal(taskId, data);
+            } catch (error) {
+                showToast('读取统计失败', 'error');
+            }
+        }
+
+        function showStatsModal(taskId, data) {
+            const modal = document.getElementById('stats-modal');
+            const content = document.getElementById('stats-content');
+            const title = document.getElementById('stats-title');
+            const totalContent = (data.content_inserted || 0) + (data.content_updated || 0);
+            const totalComments = (data.comment_inserted || 0) + (data.comment_updated || 0);
+            const durationText = formatDuration(data.duration_seconds || 0);
+            const searchText = formatDuration(data.search_seconds || 0);
+            const fullText = formatDuration(data.full_text_seconds || 0);
+            const commentsText = formatDuration(data.comments_seconds || 0);
+            const sleepText = formatDuration(data.sleep_seconds || 0);
+            title.textContent = `任务 ${taskId} 统计`;
+            content.innerHTML = `
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-gray-500">已爬页数</div>
+                        <div class="text-xl font-semibold text-gray-900">${data.pages_crawled || 0}</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-gray-500">耗时</div>
+                        <div class="text-xl font-semibold text-gray-900">${durationText}</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-gray-500">搜索耗时</div>
+                        <div class="text-xl font-semibold text-gray-900">${searchText}</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-gray-500">正文耗时</div>
+                        <div class="text-xl font-semibold text-gray-900">${fullText}</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-gray-500">评论耗时</div>
+                        <div class="text-xl font-semibold text-gray-900">${commentsText}</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-gray-500">休眠耗时</div>
+                        <div class="text-xl font-semibold text-gray-900">${sleepText}</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-gray-500">微博内容新增</div>
+                        <div class="text-xl font-semibold text-gray-900">${data.content_inserted || 0}</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-gray-500">微博内容更新</div>
+                        <div class="text-xl font-semibold text-gray-900">${data.content_updated || 0}</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-gray-500">评论新增</div>
+                        <div class="text-xl font-semibold text-gray-900">${data.comment_inserted || 0}</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-gray-500">评论更新</div>
+                        <div class="text-xl font-semibold text-gray-900">${data.comment_updated || 0}</div>
+                    </div>
+                </div>
+                <div class="mt-4 text-xs text-gray-500">
+                    内容总计: ${totalContent}，评论总计: ${totalComments}
+                </div>
+            `;
+            modal.classList.remove('hidden');
+        }
+
+        function closeStatsModal() {
+            document.getElementById('stats-modal').classList.add('hidden');
+        }
+
+        function formatDuration(totalSeconds) {
+            const seconds = Math.max(0, Number(totalSeconds) || 0);
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            if (hours > 0) {
+                return `${hours}h ${minutes}m ${secs}s`;
+            }
+            if (minutes > 0) {
+                return `${minutes}m ${secs}s`;
+            }
+            return `${secs}s`;
         }
 
         // 加载 Cookies
@@ -1106,9 +1216,10 @@
 
         async function loadMonitorTasks() {
             const type = document.getElementById('monitor-type').value;
+            const keyword = document.getElementById('monitor-keyword').value.trim();
             const pageSize = Number(document.getElementById('monitor-page-size').value) || 50;
             const page = Number(document.getElementById('monitor-page').value) || 1;
-            const response = await apiFetch(`/monitor/tasks?ms_types=${encodeURIComponent(type)}&page=${page}&page_size=${pageSize}`);
+            const response = await apiFetch(`/monitor/tasks?ms_types=${encodeURIComponent(type)}&page=${page}&page_size=${pageSize}&keyword=${encodeURIComponent(keyword)}`);
             if (!response.ok) {
                 showToast('加载后台任务失败', 'error');
                 return;
@@ -1306,6 +1417,16 @@
                 <button onclick="closeLogsModal()" class="text-gray-500 hover:text-gray-700">关闭</button>
             </div>
             <pre id="logs-content" class="text-xs bg-gray-50 p-4 rounded-lg max-h-[70vh] overflow-auto"></pre>
+        </div>
+    </div>
+
+    <div id="stats-modal" class="fixed inset-0 bg-black/40 hidden">
+        <div class="max-w-3xl mx-auto mt-20 bg-white rounded-xl shadow-lg p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h3 id="stats-title" class="text-lg font-semibold text-gray-900">任务统计</h3>
+                <button onclick="closeStatsModal()" class="text-gray-500 hover:text-gray-700">关闭</button>
+            </div>
+            <div id="stats-content"></div>
         </div>
     </div>
 
