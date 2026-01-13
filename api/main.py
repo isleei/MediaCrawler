@@ -27,7 +27,6 @@ import subprocess
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from .routers import crawler_router, data_router, websocket_router
@@ -71,16 +70,13 @@ app.include_router(weibo_ui_router)
 
 
 @app.get("/")
-async def serve_frontend():
-    """Return frontend page"""
-    index_path = os.path.join(WEBUI_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
+async def root():
+    """API root endpoint"""
     return {
         "message": "MediaCrawler WebUI API",
         "version": "1.0.0",
         "docs": "/docs",
-        "note": "WebUI not found, please build it first: cd webui && npm run build"
+        "weibo_ui": "/weibo"
     }
 
 
@@ -189,19 +185,6 @@ async def get_config_options():
             {"value": "compat", "label": "Legacy Weibo Storage"},
         ],
     }
-
-
-# Mount static resources - must be placed after all routes
-if os.path.exists(WEBUI_DIR):
-    assets_dir = os.path.join(WEBUI_DIR, "assets")
-    if os.path.exists(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
-    # Mount logos directory
-    logos_dir = os.path.join(WEBUI_DIR, "logos")
-    if os.path.exists(logos_dir):
-        app.mount("/logos", StaticFiles(directory=logos_dir), name="logos")
-    # Mount other static files (e.g., vite.svg)
-    app.mount("/static", StaticFiles(directory=WEBUI_DIR), name="webui-static")
 
 
 if __name__ == "__main__":
