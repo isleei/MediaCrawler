@@ -31,13 +31,20 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from .routers import crawler_router, data_router, websocket_router
-from .routers.weibo_ui import router as weibo_ui_router
+from .routers.weibo_ui import router as weibo_ui_router, init_scheduler
 
 app = FastAPI(
     title="MediaCrawler WebUI API",
     description="API for controlling MediaCrawler from WebUI",
     version="1.0.0"
 )
+
+# 添加启动事件处理器
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时执行"""
+    # 初始化微博定时任务调度器
+    init_scheduler()
 
 # Get webui static files directory
 WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")

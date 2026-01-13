@@ -85,6 +85,17 @@ TASK_SPIDER_CMD = os.getenv(
 )
 TASK_SPIDER_LOCK_PREFIX = os.getenv("MONITOR_TASK_SPIDER_LOCK_PREFIX", "weibo:task:running:")
 
+# 批量执行相关 Redis 键
+BATCH_ID_KEY = os.getenv("BATCH_ID_KEY", "weibo:batch:id")
+BATCH_INDEX_LIST = os.getenv("BATCH_INDEX_LIST", "weibo:batches")
+BATCH_INDEX_SET = os.getenv("BATCH_INDEX_SET", "weibo:batches:set")
+BATCH_PREFIX = os.getenv("BATCH_PREFIX", "weibo:batch:")
+BATCH_LOG_PREFIX = os.getenv("BATCH_LOG_PREFIX", "weibo:batch:logs:")
+
+# 定时任务相关 Redis 键
+SCHEDULE_CONFIG_KEY = os.getenv("SCHEDULE_CONFIG_KEY", "weibo:schedule:config")
+SCHEDULE_LOCK_KEY = os.getenv("SCHEDULE_LOCK_KEY", "weibo:schedule:lock")
+
 DEFAULT_PAGE_SIZE = int(os.getenv("DEFAULT_MAX_PAGES", "5"))
 WEIBO_PAGE_SIZE = int(os.getenv("WEIBO_PAGE_SIZE", "10"))
 
@@ -150,6 +161,14 @@ def cookie_bundle_key(name):
 
 def sentiment_key(word_type):
     return f"{SENTI_REDIS_PREFIX}{word_type}"
+
+
+def batch_key(batch_id):
+    return f"{BATCH_PREFIX}{batch_id}"
+
+
+def batch_log_key(batch_id):
+    return f"{BATCH_LOG_PREFIX}{batch_id}"
 
 
 def save_task(task):
@@ -1213,6 +1232,90 @@ async def list_monitor_tasks(
     return {"total": total, "page": page, "page_size": page_size, "tasks": tasks}
 
 
+@router.post("/monitor/tasks/{ms_id}/status")
+async def update_monitor_task_status(ms_id: int, request: Request):
+    if not monitor_engine:
+        app_logger.warning("monitor mysql disabled")
+        return JSONResponse({"error": "monitor_mysql_disabled"}, status_code=400)
+
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+
+    status = payload.get("status")
+    try:
+        status_value = int(status)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid_status"}, status_code=400)
+
+    if status_value not in (0, 1):
+        return JSONResponse({"error": "invalid_status"}, status_code=400)
+
+    sql = text(
+        """
+        update web_monitorspider
+        set ms_status = :status, ms_modify_date = now()
+        where ms_id = :ms_id
+        """
+    )
+    try:
+        with monitor_engine.begin() as conn:
+            result = conn.execute(sql, {"status": status_value, "ms_id": ms_id})
+    except Exception as exc:
+        app_logger.error("monitor mysql update failed: %s", exc)
+        return JSONResponse(
+            {"error": "monitor_mysql_unavailable", "message": str(exc)}, status_code=500
+        )
+
+    if result.rowcount == 0:
+        return JSONResponse({"error": "task_not_found"}, status_code=404)
+
+    return {"success": True, "ms_id": ms_id, "status": status_value}
+
+
+@router.post("/monitor/tasks/stop_all")
+async def stop_all_monitor_tasks(request: Request):
+    if not monitor_engine:
+        app_logger.warning("monitor mysql disabled")
+        return JSONResponse({"error": "monitor_mysql_disabled"}, status_code=400)
+
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        payload = {}
+
+    ms_types = payload.get("ms_types", "11")
+    keyword = (payload.get("keyword") or "").strip()
+    ms_type_list = str(ms_types).split(",") if ms_types else []
+    if not ms_type_list:
+        return JSONResponse({"error": "invalid_types"}, status_code=400)
+
+    where_clause = "where ms_type in :types"
+    params = {"types": tuple(ms_type_list)}
+    if keyword:
+        where_clause += " and (ms_keys like :kw or ms_start_url like :kw)"
+        params["kw"] = f"%{keyword}%"
+
+    sql = text(
+        f"""
+        update web_monitorspider
+        set ms_status = 0, ms_modify_date = now()
+        {where_clause}
+        """
+    )
+    try:
+        with monitor_engine.begin() as conn:
+            result = conn.execute(sql, params)
+    except Exception as exc:
+        app_logger.error("monitor mysql bulk update failed: %s", exc)
+        return JSONResponse(
+            {"error": "monitor_mysql_unavailable", "message": str(exc)}, status_code=500
+        )
+
+    return {"success": True, "updated": result.rowcount or 0}
+
+
 @router.post("/monitor/tasks/{ms_id}/enqueue")
 async def enqueue_monitor_task(ms_id: int):
     if not monitor_engine:
@@ -1301,3 +1404,476 @@ async def read_logs(limit: int = 200):
     total = len(lines)
     start = max(0, total - max(0, limit))
     return {"total": total, "lines": [l.rstrip() for l in lines[start:]]}
+
+
+# ========================================
+# 批量执行功能
+# ========================================
+
+def save_batch(batch):
+    """保存批次记录到 Redis"""
+    batch_id = batch["batch_id"]
+    key = batch_key(batch_id)
+    mapping = {k: str(v) for k, v in batch.items()}
+    # 将 task_ids 列表转换为 JSON 字符串
+    if "task_ids" in mapping and isinstance(batch["task_ids"], list):
+        mapping["task_ids"] = json.dumps(batch["task_ids"])
+    redis_client.hset(key, mapping=mapping)
+    if redis_client.sadd(BATCH_INDEX_SET, str(batch_id)):
+        redis_client.rpush(BATCH_INDEX_LIST, str(batch_id))
+
+
+def get_batch(batch_id):
+    """获取单个批次"""
+    data = redis_client.hgetall(batch_key(batch_id))
+    if not data:
+        return None
+    return normalize_batch(data)
+
+
+def normalize_batch(data):
+    """标准化批次数据"""
+    batch = dict(data)
+    batch["batch_id"] = int(batch["batch_id"])
+    batch["template_count"] = int(batch.get("template_count", 0))
+    batch["completed_count"] = int(batch.get("completed_count", 0))
+    batch["failed_count"] = int(batch.get("failed_count", 0))
+    # 解析 task_ids JSON 字符串
+    if "task_ids" in batch:
+        try:
+            batch["task_ids"] = json.loads(batch["task_ids"])
+        except:
+            batch["task_ids"] = []
+    return batch
+
+
+def update_batch(batch_id, updates):
+    """更新批次"""
+    key = batch_key(batch_id)
+    # 将 task_ids 列表转换为 JSON 字符串
+    if "task_ids" in updates and isinstance(updates["task_ids"], list):
+        updates["task_ids"] = json.dumps(updates["task_ids"])
+    redis_client.hset(key, mapping={k: str(v) for k, v in updates.items()})
+
+
+def list_batches(limit=50):
+    """获取批次列表"""
+    batch_ids = redis_client.lrange(BATCH_INDEX_LIST, 0, -1)
+    batches = []
+    for bid in batch_ids[:limit]:
+        batch = get_batch(int(bid))
+        if batch:
+            batches.append(batch)
+    # 按 batch_id 降序排序（最新的在前面）
+    batches.sort(key=lambda x: x["batch_id"], reverse=True)
+    return batches
+
+
+def append_batch_log(batch_id, message):
+    """添加批次日志"""
+    if message is None:
+        return
+    key = batch_log_key(batch_id)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    redis_client.rpush(key, f"[{timestamp}] {message}")
+
+
+def update_batch_progress(batch_id, task_status):
+    """更新批次进度"""
+    batch = get_batch(batch_id)
+    if not batch:
+        return
+    
+    updates = {}
+    if task_status == "completed":
+        updates["completed_count"] = batch["completed_count"] + 1
+    elif task_status in ["failed", "stopped"]:
+        updates["failed_count"] = batch["failed_count"] + 1
+    
+    if updates:
+        update_batch(batch_id, updates)
+
+
+def _execute_batch_sync(batch_id, monitor_tasks):
+    """同步执行批量任务（在后台线程中运行）"""
+    import time
+
+    # 更新批次状态为 running
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    update_batch(batch_id, {"status": "running", "started_at": now})
+    append_batch_log(batch_id, f"开始批量执行，共 {len(monitor_tasks)} 个监控任务")
+
+    task_ids = []
+
+    try:
+        for idx, monitor_task in enumerate(monitor_tasks, 1):
+            ms_id = monitor_task["ms_id"]
+            keyword = monitor_task.get("ms_keys") or extract_keyword_from_url(monitor_task.get("ms_start_url") or "")
+
+            append_batch_log(batch_id, f"[{idx}/{len(monitor_tasks)}] 开始执行监控任务 #{ms_id}: {keyword}")
+
+            # 创建任务实例
+            task_id = redis_client.incr(TASK_ID_KEY)
+            max_pages = int(os.getenv("DEFAULT_MAX_PAGES", str(DEFAULT_PAGE_SIZE)))
+            with_comments = os.getenv("MONITOR_DEFAULT_WITH_COMMENTS", "1") in ("1", "true", "True")
+
+            new_task = {
+                "id": task_id,
+                "keyword": keyword,
+                "max_pages": max_pages,
+                "with_comments": 1 if with_comments else 0,
+                "status": "pending",
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "started_at": "",
+                "finished_at": "",
+                "items_count": 0,
+                "output_file": "",
+                "data_key": task_data_key(task_id),
+                "monitor_id": ms_id,
+                "batch_id": batch_id,
+                "source": "batch",
+            }
+            save_task(new_task)
+            task_ids.append(task_id)
+
+            # 更新批次的 task_ids
+            update_batch(batch_id, {"task_ids": task_ids})
+
+            # 启动任务
+            append_batch_log(batch_id, f"启动任务 ID: {task_id}")
+            start_task(task_id, keyword, max_pages)
+
+            # 轮询等待任务完成（timeout: 1小时）
+            max_wait = 720  # 720 * 5s = 1 小时
+            for i in range(max_wait):
+                task = get_task(task_id)
+                if task and task["status"] in ["completed", "failed", "stopped"]:
+                    append_batch_log(batch_id, f"任务 {task_id} 完成，状态: {task['status']}, 数据量: {task.get('items_count', 0)}")
+                    break
+                time.sleep(5)
+            else:
+                # 超时
+                append_batch_log(batch_id, f"任务 {task_id} 执行超时")
+
+            # 更新批次进度
+            task = get_task(task_id)
+            if task:
+                update_batch_progress(batch_id, task["status"])
+
+        # 所有任务完成
+        update_batch(batch_id, {
+            "status": "completed",
+            "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        append_batch_log(batch_id, "批量执行完成")
+
+    except Exception as e:
+        # 执行失败
+        update_batch(batch_id, {
+            "status": "failed",
+            "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        append_batch_log(batch_id, f"批量执行失败: {str(e)}")
+        app_logger.error(f"批量执行失败 (batch_id={batch_id}): {e}", exc_info=True)
+
+
+async def execute_batch(monitor_task_ids=None, trigger_type="manual", ms_types="11"):
+    """执行批量任务 - 从任务中心读取已启用的监控任务"""
+    if not monitor_engine:
+        return {"success": False, "error": "monitor_mysql_disabled", "message": "任务中心数据库未配置"}
+
+    # 获取要执行的监控任务
+    try:
+        if monitor_task_ids:
+            # 执行指定的监控任务
+            placeholders = ",".join([":id" + str(i) for i in range(len(monitor_task_ids))])
+            sql = text(f"""
+                select ms_id, ms_type, ms_keys, ms_start_url, ms_status
+                from web_monitorspider
+                where ms_id in ({placeholders}) and ms_status = 1
+            """)
+            params = {f"id{i}": tid for i, tid in enumerate(monitor_task_ids)}
+        else:
+            # 执行所有已启用的监控任务
+            ms_type_list = ms_types.split(",")
+            sql = text("""
+                select ms_id, ms_type, ms_keys, ms_start_url, ms_status
+                from web_monitorspider
+                where ms_type in :types and ms_status = 1
+                order by ms_modify_date desc
+            """)
+            params = {"types": tuple(ms_type_list)}
+
+        with monitor_engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings()
+            monitor_tasks = [dict(row) for row in rows]
+
+    except Exception as exc:
+        app_logger.error("查询监控任务失败: %s", exc)
+        return {"success": False, "error": "query_failed", "message": str(exc)}
+
+    if not monitor_tasks:
+        return {"success": False, "error": "no_enabled_tasks", "message": "没有已启用的监控任务"}
+
+    # 创建批次记录
+    batch_id = redis_client.incr(BATCH_ID_KEY)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    batch = {
+        "batch_id": batch_id,
+        "status": "pending",
+        "started_at": "",
+        "finished_at": "",
+        "template_count": len(monitor_tasks),  # 保持字段名兼容性
+        "completed_count": 0,
+        "failed_count": 0,
+        "task_ids": [],
+        "trigger_type": trigger_type,
+        "created_at": now,
+    }
+
+    save_batch(batch)
+    append_batch_log(batch_id, f"创建批次，准备执行 {len(monitor_tasks)} 个监控任务")
+
+    # 在后台线程中执行
+    threading.Thread(target=_execute_batch_sync, args=(batch_id, monitor_tasks), daemon=True).start()
+
+    return {"success": True, "batch_id": batch_id, "task_count": len(monitor_tasks)}
+
+
+@router.post("/batch/execute")
+async def batch_execute_route(request: Request):
+    """手动触发批量执行 - 执行任务中心的已启用监控任务"""
+    data = await request.json()
+    monitor_task_ids = data.get("monitor_task_ids")  # 可选：指定要执行的监控任务 ID 列表
+    ms_types = data.get("ms_types", "11")  # 默认执行类型 11 的任务
+    result = await execute_batch(monitor_task_ids, trigger_type="manual", ms_types=ms_types)
+    return result
+
+
+@router.get("/batches")
+async def get_batches(limit: int = 50):
+    """获取批量执行历史"""
+    batches = list_batches(limit=limit)
+    return {"success": True, "batches": batches, "total": len(batches)}
+
+
+@router.get("/batches/{batch_id}")
+async def get_batch_detail(batch_id: int):
+    """获取批次详情"""
+    batch = get_batch(batch_id)
+    if not batch:
+        return JSONResponse({"success": False, "error": "batch_not_found"}, status_code=404)
+    return {"success": True, "batch": batch}
+
+
+@router.get("/batches/{batch_id}/logs")
+async def get_batch_logs(batch_id: int):
+    """获取批次日志"""
+    logs = redis_client.lrange(batch_log_key(batch_id), 0, -1)
+    return {"success": True, "logs": logs, "total": len(logs)}
+
+
+@router.post("/batches/{batch_id}/stop")
+async def stop_batch_route(batch_id: int):
+    """停止批量执行"""
+    batch = get_batch(batch_id)
+    if not batch:
+        return JSONResponse({"success": False, "error": "batch_not_found"}, status_code=404)
+    
+    if batch["status"] != "running":
+        return JSONResponse({"success": False, "error": "not_running"}, status_code=400)
+    
+    # 停止所有关联的任务
+    task_ids = batch.get("task_ids", [])
+    stopped_count = 0
+    
+    for task_id in task_ids:
+        task = get_task(task_id)
+        if task and task["status"] == "running":
+            pid = task.get("pid")
+            if pid:
+                ok, reason = stop_task(task_id, pid)
+                if ok:
+                    stopped_count += 1
+    
+    # 更新批次状态
+    update_batch(batch_id, {
+        "status": "stopped",
+        "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
+    append_batch_log(batch_id, f"批次已停止，共停止 {stopped_count} 个任务")
+    
+    return {"success": True, "stopped_count": stopped_count}
+
+
+# ========================================
+# 定时任务功能
+# ========================================
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+_scheduler = None
+
+
+def init_scheduler():
+    """初始化调度器（在 FastAPI 启动时调用）"""
+    global _scheduler
+    if _scheduler is not None:
+        return
+    
+    _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+    _scheduler.start()
+    app_logger.info("APScheduler 调度器已启动")
+    
+    # 加载定时配置
+    reload_schedule()
+
+
+def reload_schedule():
+    """加载定时配置并创建调度任务"""
+    global _scheduler
+    if _scheduler is None:
+        return
+    
+    config = get_schedule_config()
+    
+    # 移除旧的调度任务
+    if _scheduler.get_job("weibo_batch_execute"):
+        _scheduler.remove_job("weibo_batch_execute")
+    
+    if config.get("enabled"):
+        try:
+            cron_expr = config["cron_expression"]
+            cron_parts = cron_expr.split()
+            
+            if len(cron_parts) != 5:
+                app_logger.error(f"无效的 cron 表达式: {cron_expr}")
+                return
+            
+            _scheduler.add_job(
+                scheduled_batch_execute,
+                trigger=CronTrigger(
+                    minute=cron_parts[0],
+                    hour=cron_parts[1],
+                    day=cron_parts[2],
+                    month=cron_parts[3],
+                    day_of_week=cron_parts[4],
+                    timezone="Asia/Shanghai"
+                ),
+                id="weibo_batch_execute",
+                replace_existing=True
+            )
+            app_logger.info(f"定时任务已设置: {cron_expr}")
+        except Exception as e:
+            app_logger.error(f"设置定时任务失败: {e}", exc_info=True)
+
+
+def scheduled_batch_execute():
+    """定时任务触发函数"""
+    # 分布式锁防止重复执行
+    if not redis_client.set(SCHEDULE_LOCK_KEY, "1", nx=True, ex=3600):
+        app_logger.warning("定时任务已在执行中，跳过本次触发")
+        return
+    
+    try:
+        app_logger.info("定时任务触发：开始批量执行")
+        import asyncio
+        asyncio.run(execute_batch(trigger_type="scheduled"))
+        
+        # 更新最后执行时间
+        update_schedule_config({"last_run_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    except Exception as e:
+        app_logger.error(f"定时任务执行失败: {e}", exc_info=True)
+    finally:
+        redis_client.delete(SCHEDULE_LOCK_KEY)
+
+
+def get_schedule_config():
+    """获取定时配置"""
+    data = redis_client.hgetall(SCHEDULE_CONFIG_KEY)
+    if not data:
+        # 返回默认配置
+        return {
+            "enabled": False,
+            "cron_expression": "0 0 * * *",  # 每天凌晨
+            "next_run_time": "",
+            "last_run_time": ""
+        }
+    
+    config = dict(data)
+    config["enabled"] = config.get("enabled", "0") == "1"
+    return config
+
+
+def update_schedule_config(updates):
+    """更新定时配置"""
+    # 转换 enabled 为字符串
+    if "enabled" in updates:
+        updates["enabled"] = "1" if updates["enabled"] else "0"
+    
+    redis_client.hset(SCHEDULE_CONFIG_KEY, mapping={k: str(v) for k, v in updates.items()})
+    
+    # 重新加载调度任务
+    if "cron_expression" in updates or "enabled" in updates:
+        reload_schedule()
+
+
+def validate_cron_expression(cron_expr):
+    """验证 cron 表达式"""
+    try:
+        parts = cron_expr.split()
+        if len(parts) != 5:
+            return False, "cron 表达式必须包含 5 个部分（分 时 日 月 周）"
+        
+        # 尝试创建 CronTrigger 来验证
+        CronTrigger(
+            minute=parts[0],
+            hour=parts[1],
+            day=parts[2],
+            month=parts[3],
+            day_of_week=parts[4]
+        )
+        return True, "cron 表达式有效"
+    except Exception as e:
+        return False, f"无效的 cron 表达式: {str(e)}"
+
+
+@router.get("/schedule/config")
+async def get_schedule_config_route():
+    """获取定时配置"""
+    config = get_schedule_config()
+    return {"success": True, "config": config}
+
+
+@router.put("/schedule/config")
+async def update_schedule_config_route(request: Request):
+    """更新定时配置"""
+    data = await request.json()
+    
+    updates = {}
+    if "enabled" in data:
+        updates["enabled"] = data["enabled"]
+    if "cron_expression" in data:
+        # 验证 cron 表达式
+        valid, message = validate_cron_expression(data["cron_expression"])
+        if not valid:
+            return JSONResponse({"success": False, "error": "invalid_cron", "message": message}, status_code=400)
+        updates["cron_expression"] = data["cron_expression"]
+    
+    if updates:
+        update_schedule_config(updates)
+    
+    return {"success": True, "config": get_schedule_config()}
+
+
+@router.post("/schedule/trigger")
+async def trigger_schedule_manually():
+    """手动触发定时任务（用于测试）"""
+    try:
+        result = await execute_batch(trigger_type="manual")
+        return result
+    except Exception as e:
+        app_logger.error(f"手动触发定时任务失败: {e}", exc_info=True)
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)

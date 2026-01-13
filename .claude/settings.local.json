@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(uv run python:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(redis-cli LRANGE:*)",
+      "Bash(uv add:*)"
     ]
   }
 }
