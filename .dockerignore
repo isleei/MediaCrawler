@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+data
+logs
+browser_data
+*.log
+.DS_Store

@@ -67,7 +67,43 @@ class WeiboCrawler(AbstractCrawler):
         self.ip_proxy_pool = None  # Proxy IP pool for automatic proxy refresh
         self._stats_client = None
         self._stats_key = ""
+        self._note_comment_counts = {}
+        self._note_prev_comment_counts = {}
+        self._skip_comments_if_unchanged = os.getenv(
+            "WEIBO_SKIP_COMMENTS_IF_UNCHANGED", "0"
+        ) in ("1", "true", "True")
+        self._es_base = (os.getenv("ES_HOSTS", "http://127.0.0.1:9200").split(",")[0]).rstrip("/")
+        self._es_index_weibo = os.getenv("ES_INDEX_WEIBO", "weibocontent")
         self._init_task_stats()
+
+    def _build_content_id(self, note_id: str) -> str:
+        if not note_id:
+            return ""
+        prefix = source_keyword_var.get() or ""
+        return f"{prefix}_{note_id}" if prefix else str(note_id)
+
+    async def _get_es_comments_count(self, note_id: str) -> Optional[int]:
+        if not note_id or not self._es_base or not self._es_index_weibo:
+            return None
+        try:
+            import httpx
+
+            content_id = self._build_content_id(note_id)
+            if not content_id:
+                return None
+            url = f"{self._es_base}/{self._es_index_weibo}/_doc/{content_id}"
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(url)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            src = data.get("_source") or {}
+            value = src.get("comments_count")
+            if value is None:
+                return None
+            return int(value)
+        except Exception:
+            return None
 
     def _init_task_stats(self):
         task_id = os.getenv("CRAWLER_TASK_ID", "").strip()
@@ -159,17 +195,26 @@ class WeiboCrawler(AbstractCrawler):
                 )
 
             crawler_type_var.set(config.CRAWLER_TYPE)
-            if config.CRAWLER_TYPE == "search":
-                # Search for video and retrieve their comment information.
-                await self.search()
-            elif config.CRAWLER_TYPE == "detail":
-                # Get the information and comments of the specified post
-                await self.get_specified_notes()
-            elif config.CRAWLER_TYPE == "creator":
-                # Get creator's information and their notes and comments
-                await self.get_creators_and_notes()
-            else:
-                pass
+            try:
+                if config.CRAWLER_TYPE == "search":
+                    # Search for video and retrieve their comment information.
+                    await self.search()
+                elif config.CRAWLER_TYPE == "detail":
+                    # Get the information and comments of the specified post
+                    await self.get_specified_notes()
+                elif config.CRAWLER_TYPE == "creator":
+                    # Get creator's information and their notes and comments
+                    await self.get_creators_and_notes()
+                else:
+                    pass
+            finally:
+                # 刷新批量写入缓冲区（如果使用了批量存储）
+                store = weibo_store.WeibostoreFactory.create_store()
+                if hasattr(store, 'flush_all'):
+                    utils.logger.info("[WeiboCrawler.start] Flushing batch store buffers...")
+                    await store.flush_all()
+                    utils.logger.info("[WeiboCrawler.start] Batch store buffers flushed")
+
             utils.logger.info("[WeiboCrawler.start] Weibo Crawler finished ...")
 
     async def search(self):
@@ -234,6 +279,15 @@ class WeiboCrawler(AbstractCrawler):
                         mblog: Dict = note_item.get("mblog")
                         if mblog:
                             note_id_list.append(mblog.get("id"))
+                            comments_count = mblog.get("comments_count")
+                            if comments_count is not None:
+                                try:
+                                    self._note_comment_counts[mblog.get("id")] = int(comments_count)
+                                except (TypeError, ValueError):
+                                    self._note_comment_counts[mblog.get("id")] = None
+                            if self._skip_comments_if_unchanged:
+                                prev_count = await self._get_es_comments_count(mblog.get("id"))
+                                self._note_prev_comment_counts[mblog.get("id")] = prev_count
                             await weibo_store.update_weibo_note(note_item)
                             await self.get_note_images(mblog)
 
@@ -314,6 +368,19 @@ class WeiboCrawler(AbstractCrawler):
         """
         async with semaphore:
             try:
+                if self._skip_comments_if_unchanged:
+                    current = self._note_comment_counts.get(note_id)
+                    prev = self._note_prev_comment_counts.get(note_id)
+                    if current == 0:
+                        utils.logger.info(
+                            f"[WeiboCrawler.get_note_comments] Skip note {note_id}, comments_count=0"
+                        )
+                        return
+                    if current is not None and prev is not None and current == prev:
+                        utils.logger.info(
+                            f"[WeiboCrawler.get_note_comments] Skip note {note_id}, comments unchanged: {current}"
+                        )
+                        return
                 utils.logger.info(f"[WeiboCrawler.get_note_comments] begin get note_id: {note_id} comments ...")
 
                 # Sleep before fetching comments

@@ -5,21 +5,14 @@
 # Repository: https://github.com/NanmiCoder/MediaCrawler/blob/main/database/db_session.py
 # GitHub: https://github.com/NanmiCoder
 # Licensed under NON-COMMERCIAL LEARNING LICENSE 1.1
-#
-# 声明：本代码仅供学习和研究目的使用。使用者应遵守以下原则：
-# 1. 不得用于任何商业用途。
-# 2. 使用时应遵守目标平台的使用条款和robots.txt规则。
-# 3. 不得进行大规模爬取或对平台造成运营干扰。
-# 4. 应合理控制请求频率，避免给目标平台带来不必要的负担。
-# 5. 不得用于任何非法或不当的用途。
-#
-# 详细许可条款请参阅项目根目录下的LICENSE文件。
-# 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
+
+from contextlib import asynccontextmanager
+from urllib.parse import quote_plus
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
-from contextlib import asynccontextmanager
+
 from .models import Base
 import config
 from config.db_config import mysql_db_config, sqlite_db_config
@@ -28,15 +21,38 @@ from config.db_config import mysql_db_config, sqlite_db_config
 _engines = {}
 
 
+def _build_mysql_url(with_db: bool = True) -> str:
+    user = quote_plus(str(mysql_db_config["user"]))
+    password = quote_plus(str(mysql_db_config["password"]))
+    host = mysql_db_config["host"]
+    port = int(mysql_db_config["port"])
+    base = f"mysql+asyncmy://{user}:{password}@{host}:{port}"
+    if with_db:
+        return f"{base}/{mysql_db_config['db_name']}?charset=utf8mb4"
+    return f"{base}/?charset=utf8mb4"
+
 async def create_database_if_not_exists(db_type: str):
     if db_type == "mysql" or db_type == "db":
-        # Connect to the server without a database
-        server_url = f"mysql+asyncmy://{mysql_db_config['user']}:{mysql_db_config['password']}@{mysql_db_config['host']}:{mysql_db_config['port']}"
-        engine = create_async_engine(server_url, echo=False)
-        async with engine.connect() as conn:
-            await conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {mysql_db_config['db_name']}"))
-        await engine.dispose()
-
+        import asyncmy
+        conn = await asyncmy.connect(
+            host=mysql_db_config["host"],
+            port=int(mysql_db_config["port"]),
+            user=mysql_db_config["user"],
+            password=mysql_db_config["password"],
+        )
+        try:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "CREATE DATABASE IF NOT EXISTS "
+                    f"{mysql_db_config['db_name']} "
+                    "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                )
+            await conn.commit()
+        finally:
+            if hasattr(conn, "ensure_closed"):
+                await conn.ensure_closed()
+            else:
+                conn.close()
 
 def get_async_engine(db_type: str = None):
     if db_type is None:
@@ -50,25 +66,30 @@ def get_async_engine(db_type: str = None):
 
     if db_type == "sqlite":
         db_url = f"sqlite+aiosqlite:///{sqlite_db_config['db_path']}"
+        engine = create_async_engine(db_url, echo=False)
     elif db_type == "mysql" or db_type == "db":
-        db_url = f"mysql+asyncmy://{mysql_db_config['user']}:{mysql_db_config['password']}@{mysql_db_config['host']}:{mysql_db_config['port']}/{mysql_db_config['db_name']}"
+        engine = create_async_engine(_build_mysql_url(with_db=True), echo=False, pool_pre_ping=True)
     else:
         raise ValueError(f"Unsupported database type: {db_type}")
 
-    engine = create_async_engine(db_url, echo=False)
     _engines[db_type] = engine
     return engine
-
 
 async def create_tables(db_type: str = None):
     if db_type is None:
         db_type = config.SAVE_DATA_OPTION
-    await create_database_if_not_exists(db_type)
+    
+    # Try to create DB if using mysql
+    try:
+        if db_type in ["mysql", "db"]:
+            await create_database_if_not_exists(db_type)
+    except Exception as e:
+        print(f"Warning: Failed to ensure database existence: {e}")
+
     engine = get_async_engine(db_type)
     if engine:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-
 
 @asynccontextmanager
 async def get_session() -> AsyncSession:
@@ -76,7 +97,10 @@ async def get_session() -> AsyncSession:
     if not engine:
         yield None
         return
-    AsyncSessionFactory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    
+    AsyncSessionFactory = sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
     session = AsyncSessionFactory()
     try:
         yield session

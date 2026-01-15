@@ -134,6 +134,110 @@
                 </div>
             </div>
 
+            <!-- 队列状态卡片 -->
+            <div class="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl shadow-sm border border-blue-100 p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 bg-blue-500 rounded-xl flex items-center justify-center">
+                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+                            </svg>
+                        </div>
+                        <div>
+                            <h2 class="text-lg font-bold text-gray-800">任务队列状态</h2>
+                            <p class="text-xs text-gray-500">实时监控任务执行情况</p>
+                        </div>
+                    </div>
+                    <button onclick="loadQueueStatus()" class="p-2 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- 统计卡片 -->
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                    <div class="bg-white rounded-xl p-4 shadow-sm">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-xs text-gray-500 mb-1">运行中</p>
+                                <p class="text-2xl font-bold text-green-600" id="queue-running-count">0</p>
+                            </div>
+                            <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
+                                <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-xl p-4 shadow-sm">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-xs text-gray-500 mb-1">队列中</p>
+                                <p class="text-2xl font-bold text-orange-600" id="queue-queued-count">0</p>
+                            </div>
+                            <div class="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
+                                <svg class="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-xl p-4 shadow-sm">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-xs text-gray-500 mb-1">并发限制</p>
+                                <p class="text-2xl font-bold text-blue-600" id="queue-max-concurrent">3</p>
+                            </div>
+                            <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                                <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-xl p-4 shadow-sm">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-xs text-gray-500 mb-1">可用Cookie</p>
+                                <p class="text-2xl font-bold text-purple-600" id="queue-available-cookies">0</p>
+                            </div>
+                            <div class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
+                                <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 队列操作按钮 -->
+                <div class="flex gap-2">
+                    <button onclick="clearFailedTasks()" class="flex-1 bg-white hover:bg-gray-50 text-gray-700 px-4 py-2.5 rounded-lg transition-colors font-medium text-sm shadow-sm border border-gray-200">
+                        🗑️ 清理失败任务
+                    </button>
+                    <button onclick="retryQueuedTasks()" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2.5 rounded-lg transition-colors font-medium text-sm shadow-sm">
+                        🔄 重试队列任务
+                    </button>
+                    <button onclick="clearAllQueuedTasks()" class="flex-1 bg-red-500 hover:bg-red-600 text-white px-4 py-2.5 rounded-lg transition-colors font-medium text-sm shadow-sm">
+                        ❌ 清空队列
+                    </button>
+                </div>
+
+                <!-- 队列详情（可展开） -->
+                <div id="queue-details" class="hidden mt-4">
+                    <div class="bg-white rounded-xl p-4 shadow-sm">
+                        <h3 class="text-sm font-bold text-gray-700 mb-3">队列中的任务</h3>
+                        <div class="space-y-2 max-h-60 overflow-y-auto" id="queued-tasks-list">
+                            <!-- 动态加载队列中的任务 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 任务列表 -->
             <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 <div class="p-6 border-b border-gray-50 flex items-center justify-between">
@@ -160,6 +264,10 @@
                                     class="py-4 px-6 text-[11px] font-bold text-gray-400 uppercase tracking-widest text-center">
                                     范围</th>
                                 <th class="py-4 px-6 text-[11px] font-bold text-gray-400 uppercase tracking-widest">当前状态
+                                </th>
+                                <th class="py-4 px-6 text-[11px] font-bold text-gray-400 uppercase tracking-widest">开始时间
+                                </th>
+                                <th class="py-4 px-6 text-[11px] font-bold text-gray-400 uppercase tracking-widest">执行时间
                                 </th>
                                 <th
                                     class="py-4 px-6 text-[11px] font-bold text-gray-400 uppercase tracking-widest text-center">
@@ -310,7 +418,7 @@
             </div>
 
             <!-- 代理管理 -->
-            <div class="bg-white rounded-lg shadow p-6">
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
                 <h2 class="text-xl font-semibold mb-4">代理池</h2>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                     <div>
@@ -332,6 +440,124 @@
                 <div id="proxy-container"></div>
                 <div id="no-proxies" class="text-center py-4 text-gray-500 hidden">
                     暂无代理
+                </div>
+            </div>
+
+            <!-- Cookie 自动检测配置 -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-semibold">Cookie 自动检测</h2>
+                    <span class="px-2 py-0.5 bg-blue-50 text-blue-600 text-[10px] font-bold rounded uppercase tracking-wider">自动化</span>
+                </div>
+                <p class="text-sm text-gray-500 mb-4">定时检测所有 Cookie 是否有效，失效时自动发送 Webhook 通知</p>
+
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end mb-4">
+                    <div class="md:col-span-6">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Cron 表达式</label>
+                        <input type="text" id="cookie-check-cron" placeholder="0 * * * *"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        <div class="mt-2 text-xs text-gray-500">
+                            格式：分 时 日 月 周 |
+                            <button onclick="setCookieCheckCron('0 * * * *')" class="text-blue-600 hover:underline">每小时</button> |
+                            <button onclick="setCookieCheckCron('0 */2 * * *')" class="text-blue-600 hover:underline">每2小时</button> |
+                            <button onclick="setCookieCheckCron('0 */6 * * *')" class="text-blue-600 hover:underline">每6小时</button>
+                        </div>
+                    </div>
+                    <div class="md:col-span-3 flex items-center h-[42px]">
+                        <label class="relative flex items-center cursor-pointer">
+                            <input type="checkbox" id="cookie-check-enabled" class="sr-only peer">
+                            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
+                            <span class="ml-3 text-sm font-medium text-gray-600">启用定时检测</span>
+                        </label>
+                    </div>
+                    <div class="md:col-span-3">
+                        <button onclick="saveCookieCheckSchedule()"
+                            class="w-full bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium">
+                            💾 保存配置
+                        </button>
+                    </div>
+                </div>
+
+                <div class="flex gap-2 mb-4">
+                    <button onclick="triggerCookieCheck()"
+                        class="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition-colors font-medium">
+                        ▶️ 立即检测
+                    </button>
+                    <button onclick="loadCookieCheckSchedule()"
+                        class="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+                        🔄 刷新配置
+                    </button>
+                </div>
+
+                <div id="cookie-check-status" class="text-sm text-gray-600">
+                    <span class="font-medium">最后检测时间：</span><span id="cookie-check-last-run">未执行</span>
+                </div>
+            </div>
+
+            <!-- Webhook 通知配置 -->
+            <div class="bg-white rounded-lg shadow p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-semibold">Webhook 通知配置</h2>
+                    <span class="px-2 py-0.5 bg-purple-50 text-purple-600 text-[10px] font-bold rounded uppercase tracking-wider">通知</span>
+                </div>
+                <p class="text-sm text-gray-500 mb-4">Cookie 失效时自动发送通知到指定的 Webhook 地址</p>
+
+                <div class="grid grid-cols-1 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Webhook URL</label>
+                        <input type="text" id="webhook-url" placeholder="https://your-webhook-url.com/notify"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        <p class="text-xs text-gray-500 mt-1">支持钉钉、企业微信、飞书等机器人 Webhook 地址</p>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">消息模板（JSON 格式）</label>
+                        <textarea id="webhook-template" rows="8" placeholder='{"event":"cookie_validation_failed","cookie_name":"{cookie_name}","status":"{status}","reason":"{reason}","timestamp":"{timestamp}"}'
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-xs"></textarea>
+                        <div class="mt-2 text-xs text-gray-500">
+                            支持变量：{cookie_name}, {status}, {reason}, {timestamp} |
+                            <button onclick="setWebhookTemplate('dingtalk')" class="text-blue-600 hover:underline">钉钉模板</button> |
+                            <button onclick="setWebhookTemplate('wecom')" class="text-blue-600 hover:underline">企业微信</button> |
+                            <button onclick="setWebhookTemplate('feishu')" class="text-blue-600 hover:underline">飞书</button> |
+                            <button onclick="setWebhookTemplate('default')" class="text-blue-600 hover:underline">默认</button>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">自定义请求头（JSON 格式，可选）</label>
+                            <textarea id="webhook-headers" rows="3" placeholder='{"Authorization":"Bearer your-token"}'
+                                class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-xs"></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">超时时间（秒）</label>
+                            <input type="number" id="webhook-timeout" value="10" min="1" max="60"
+                                class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        </div>
+                    </div>
+
+                    <div class="flex items-center">
+                        <label class="relative flex items-center cursor-pointer">
+                            <input type="checkbox" id="webhook-enabled" class="sr-only peer">
+                            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
+                            <span class="ml-3 text-sm font-medium text-gray-600">启用 Webhook 通知</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="flex gap-2">
+                    <button onclick="saveWebhookConfig()"
+                        class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium">
+                        💾 保存配置
+                    </button>
+                    <button onclick="testWebhook()"
+                        class="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition-colors font-medium">
+                        🧪 测试通知
+                    </button>
+                    <button onclick="loadWebhookConfig()"
+                        class="bg-gray-100 text-gray-700 px-6 py-2 rounded-lg hover:bg-gray-200 transition-colors font-medium">
+                        🔄 刷新配置
+                    </button>
                 </div>
             </div>
         </div>
@@ -549,6 +775,7 @@
 
             if (tab === 'tasks') {
                 loadTasks();
+                loadQueueStatus();
             } else if (tab === 'batch') {
                 loadScheduleConfig();
                 loadBatches();
@@ -572,6 +799,124 @@
                 switchTab(saved);
             }
         })();
+
+        // 加载队列状态
+        async function loadQueueStatus() {
+            try {
+                const response = await apiFetch('/tasks/queue/status');
+                if (!response.ok) {
+                    console.error('加载队列状态失败');
+                    return;
+                }
+                const status = await response.json();
+
+                // 更新统计数据
+                document.getElementById('queue-running-count').textContent = status.running_count || 0;
+                document.getElementById('queue-queued-count').textContent = status.queued_count || 0;
+                document.getElementById('queue-max-concurrent').textContent = status.max_concurrent || 3;
+
+                // 计算可用 Cookie 数量
+                const cookiesResponse = await apiFetch('/cookie_bundles');
+                if (cookiesResponse.ok) {
+                    const bundles = await cookiesResponse.json();
+                    const enabledBundles = bundles.filter(b => b.enabled !== '0' && b.enabled !== 'false' && b.enabled !== 'False');
+                    const usedCookies = Object.keys(status.cookie_usage || {}).length;
+                    const availableCookies = Math.max(0, enabledBundles.length - usedCookies);
+                    document.getElementById('queue-available-cookies').textContent = availableCookies;
+                }
+
+                // 显示队列中的任务（如果有）
+                if (status.queued_count > 0) {
+                    const queuedTasksList = document.getElementById('queued-tasks-list');
+                    queuedTasksList.innerHTML = status.queued_tasks.slice(0, 10).map(task => `
+                        <div class="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-mono text-gray-400">#${task.id}</span>
+                                <span class="text-sm text-gray-700">${task.keyword}</span>
+                            </div>
+                            <button onclick="deleteTask(${task.id})" class="text-red-500 hover:text-red-700 text-xs">删除</button>
+                        </div>
+                    `).join('');
+                    document.getElementById('queue-details').classList.remove('hidden');
+                } else {
+                    document.getElementById('queue-details').classList.add('hidden');
+                }
+            } catch (error) {
+                console.error('加载队列状态失败:', error);
+            }
+        }
+
+        // 清理失败任务
+        async function clearFailedTasks() {
+            if (!confirm('确定要删除所有失败的任务吗？')) {
+                return;
+            }
+
+            try {
+                const response = await apiFetch('/tasks');
+                if (!response.ok) {
+                    showToast('获取任务列表失败', 'error');
+                    return;
+                }
+                const tasks = await response.json();
+                const failedTasks = tasks.filter(t => t.status === 'failed');
+
+                let deletedCount = 0;
+                for (const task of failedTasks) {
+                    const deleteResponse = await apiFetch(`/tasks/${task.id}`, { method: 'DELETE' });
+                    if (deleteResponse.ok) {
+                        deletedCount++;
+                    }
+                }
+
+                showToast(`已删除 ${deletedCount} 个失败任务`, 'success');
+                loadTasks();
+                loadQueueStatus();
+            } catch (error) {
+                console.error('清理失败任务出错:', error);
+                showToast('清理失败: ' + error.message, 'error');
+            }
+        }
+
+        // 重试队列任务
+        async function retryQueuedTasks() {
+            showToast('队列任务会自动执行，无需手动重试', 'info');
+            showToast('请确保有可用的 Cookie Bundle', 'info');
+            // 刷新状态
+            loadQueueStatus();
+        }
+
+        // 清空队列
+        async function clearAllQueuedTasks() {
+            if (!confirm('确定要删除所有队列中的任务吗？此操作不可恢复！')) {
+                return;
+            }
+
+            try {
+                const response = await apiFetch('/tasks');
+                if (!response.ok) {
+                    showToast('获取任务列表失败', 'error');
+                    return;
+                }
+                const tasks = await response.json();
+                const queuedTasks = tasks.filter(t => t.status === 'queued');
+
+                let deletedCount = 0;
+                for (const task of queuedTasks) {
+                    const deleteResponse = await apiFetch(`/tasks/${task.id}`, { method: 'DELETE' });
+                    if (deleteResponse.ok) {
+                        deletedCount++;
+                    }
+                }
+
+                showToast(`已删除 ${deletedCount} 个队列任务`, 'success');
+                loadTasks();
+                loadQueueStatus();
+            } catch (error) {
+                console.error('清空队列出错:', error);
+                showToast('清空队列失败: ' + error.message, 'error');
+            }
+        }
 
         // 加载任务列表
         async function loadTasks() {
@@ -599,6 +944,12 @@
                         <span class="status-pill ${getStatusClass(task.status)}">
                              ${getStatusText(task.status)}
                         </span>
+                    </td>
+                    <td class="py-4 px-6 text-sm text-gray-500">
+                        ${formatDateTime(task.started_at) || '-'}
+                    </td>
+                    <td class="py-4 px-6 text-sm text-gray-500">
+                        ${formatTaskDuration(task.started_at, task.finished_at, task.status)}
                     </td>
                     <td class="py-4 px-6 text-center">
                         ${task.with_comments ?
@@ -921,6 +1272,24 @@
                 return `${minutes}m ${secs}s`;
             }
             return `${secs}s`;
+        }
+
+        function parseDateTime(value) {
+            if (!value) return null;
+            const text = String(value).trim();
+            if (!text) return null;
+            const isoLike = text.replace(' ', 'T');
+            const date = new Date(isoLike);
+            return Number.isNaN(date.getTime()) ? null : date;
+        }
+
+        function formatTaskDuration(startedAt, finishedAt, status) {
+            const start = parseDateTime(startedAt);
+            if (!start) return '-';
+            const end = parseDateTime(finishedAt) || (status === 'running' ? new Date() : null);
+            if (!end) return '-';
+            const seconds = Math.floor((end.getTime() - start.getTime()) / 1000);
+            return formatDuration(seconds);
         }
 
         async function loadCookieBundles() {
@@ -1764,6 +2133,238 @@
             alert('保存失败: ' + error.message);
         }
     }
+
+    // ========================================
+    // Cookie 自动检测配置
+    // ========================================
+
+    // 加载 Cookie 检测定时配置
+    async function loadCookieCheckSchedule() {
+        try {
+            const response = await fetch('/weibo/api/cookie_check/schedule/config');
+            const data = await response.json();
+            if (data.success) {
+                const config = data.config;
+                document.getElementById('cookie-check-cron').value = config.cron_expression || '0 * * * *';
+                document.getElementById('cookie-check-enabled').checked = config.enabled || false;
+                document.getElementById('cookie-check-last-run').textContent = config.last_run_time || '未执行';
+            }
+        } catch (error) {
+            console.error('加载 Cookie 检测配置失败:', error);
+        }
+    }
+
+    // 保存 Cookie 检测定时配置
+    async function saveCookieCheckSchedule() {
+        const cronExpression = document.getElementById('cookie-check-cron').value.trim();
+        const enabled = document.getElementById('cookie-check-enabled').checked;
+
+        if (!cronExpression) {
+            alert('请输入 Cron 表达式');
+            return;
+        }
+
+        try {
+            const response = await fetch('/weibo/api/cookie_check/schedule/config', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    cron_expression: cronExpression,
+                    enabled: enabled
+                })
+            });
+
+            const data = await response.json();
+            if (data.success) {
+                alert('Cookie 检测配置已保存');
+                loadCookieCheckSchedule();
+            } else {
+                alert('保存失败: ' + (data.message || data.error || '未知错误'));
+            }
+        } catch (error) {
+            console.error('保存 Cookie 检测配置失败:', error);
+            alert('保存失败: ' + error.message);
+        }
+    }
+
+    // 手动触发 Cookie 检测
+    async function triggerCookieCheck() {
+        if (!confirm('确定要立即检测所有 Cookie 吗？')) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/weibo/api/cookie_check/schedule/trigger', {
+                method: 'POST'
+            });
+
+            const data = await response.json();
+            if (data.success) {
+                alert('Cookie 检测任务已触发，请稍后查看结果');
+                setTimeout(() => {
+                    loadCookieBundles();
+                    loadCookieCheckSchedule();
+                }, 2000);
+            } else {
+                alert('触发失败: ' + (data.message || data.error || '未知错误'));
+            }
+        } catch (error) {
+            console.error('触发 Cookie 检测失败:', error);
+            alert('触发失败: ' + error.message);
+        }
+    }
+
+    // 设置 Cookie 检测 Cron 表达式
+    function setCookieCheckCron(cron) {
+        document.getElementById('cookie-check-cron').value = cron;
+    }
+
+    // ========================================
+    // Webhook 配置管理
+    // ========================================
+
+    // 加载 Webhook 配置
+    async function loadWebhookConfig() {
+        try {
+            const response = await fetch('/weibo/api/webhook/config');
+            const data = await response.json();
+            if (data.success) {
+                const config = data.config;
+                document.getElementById('webhook-url').value = config.webhook_url || '';
+                document.getElementById('webhook-template').value = config.message_template || '';
+                document.getElementById('webhook-headers').value = config.custom_headers || '{}';
+                document.getElementById('webhook-timeout').value = config.timeout || 10;
+                document.getElementById('webhook-enabled').checked = config.enabled || false;
+            }
+        } catch (error) {
+            console.error('加载 Webhook 配置失败:', error);
+        }
+    }
+
+    // 保存 Webhook 配置
+    async function saveWebhookConfig() {
+        const webhookUrl = document.getElementById('webhook-url').value.trim();
+        const template = document.getElementById('webhook-template').value.trim();
+        const headers = document.getElementById('webhook-headers').value.trim();
+        const timeout = parseInt(document.getElementById('webhook-timeout').value);
+        const enabled = document.getElementById('webhook-enabled').checked;
+
+        if (enabled && !webhookUrl) {
+            alert('启用 Webhook 时必须提供 Webhook URL');
+            return;
+        }
+
+        // 验证 JSON 格式
+        if (template) {
+            try {
+                JSON.parse(template);
+            } catch (e) {
+                alert('消息模板格式错误，必须是有效的 JSON');
+                return;
+            }
+        }
+
+        if (headers) {
+            try {
+                JSON.parse(headers);
+            } catch (e) {
+                alert('自定义请求头格式错误，必须是有效的 JSON');
+                return;
+            }
+        }
+
+        try {
+            const response = await fetch('/weibo/api/webhook/config', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    webhook_url: webhookUrl,
+                    message_template: template || undefined,
+                    custom_headers: headers || undefined,
+                    timeout: timeout,
+                    enabled: enabled
+                })
+            });
+
+            const data = await response.json();
+            if (data.success) {
+                alert('Webhook 配置已保存');
+                loadWebhookConfig();
+            } else {
+                alert('保存失败: ' + (data.message || data.error || '未知错误'));
+            }
+        } catch (error) {
+            console.error('保存 Webhook 配置失败:', error);
+            alert('保存失败: ' + error.message);
+        }
+    }
+
+    // 测试 Webhook
+    async function testWebhook() {
+        try {
+            const response = await fetch('/weibo/api/webhook/test', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    cookie_name: 'test_cookie',
+                    status: 'expired',
+                    reason: '测试通知'
+                })
+            });
+
+            const data = await response.json();
+            if (data.success) {
+                alert('Webhook 测试成功！请检查接收端是否收到通知');
+            } else {
+                alert('Webhook 测试失败: ' + (data.message || data.error || '未知错误'));
+            }
+        } catch (error) {
+            console.error('测试 Webhook 失败:', error);
+            alert('测试失败: ' + error.message);
+        }
+    }
+
+    // 设置 Webhook 模板
+    function setWebhookTemplate(type) {
+        const templates = {
+            'default': {
+                "event": "cookie_validation_failed",
+                "cookie_name": "{cookie_name}",
+                "status": "{status}",
+                "reason": "{reason}",
+                "timestamp": "{timestamp}"
+            },
+            'dingtalk': {
+                "msgtype": "text",
+                "text": {
+                    "content": "⚠️ Cookie 失效通知\n\nCookie 名称: {cookie_name}\n状态: {status}\n原因: {reason}\n时间: {timestamp}"
+                }
+            },
+            'wecom': {
+                "msgtype": "markdown",
+                "markdown": {
+                    "content": "## Cookie 失效通知\n\n> Cookie 名称: {cookie_name}\n> 状态: <font color=\"warning\">{status}</font>\n> 原因: {reason}\n> 时间: {timestamp}"
+                }
+            },
+            'feishu': {
+                "msg_type": "text",
+                "content": {
+                    "text": "⚠️ Cookie 失效通知\n\nCookie 名称: {cookie_name}\n状态: {status}\n原因: {reason}\n时间: {timestamp}"
+                }
+            }
+        };
+
+        const template = templates[type] || templates['default'];
+        document.getElementById('webhook-template').value = JSON.stringify(template, null, 2);
+    }
+
+    // 页面加载时初始化
+    document.addEventListener('DOMContentLoaded', function() {
+        // 加载 Cookie 检测配置
+        loadCookieCheckSchedule();
+        // 加载 Webhook 配置
+        loadWebhookConfig();
+    });
 </script>
 
 </body>

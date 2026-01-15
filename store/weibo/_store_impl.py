@@ -30,12 +30,12 @@ import pathlib
 from typing import Dict
 
 import aiofiles
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import config
 from base.base_crawler import AbstractStore
-from database.models import WeiboCreator, WeiboNote, WeiboNoteComment
+from database.models import WebUITask, WeiboCreator, WeiboNote, WeiboNoteComment
 from tools import utils, words
 from tools.async_file_writer import AsyncFileWriter
 from database.db_session import get_session
@@ -98,6 +98,36 @@ class WeiboCsvStoreImplement(AbstractStore):
 
 
 class WeiboDbStoreImplement(AbstractStore):
+    async def _incr_task_stats(
+        self,
+        session: AsyncSession,
+        *,
+        content_inserted: bool = False,
+        content_updated: bool = False,
+        comment_inserted: bool = False,
+        comment_updated: bool = False,
+    ):
+        task_id = os.getenv("CRAWLER_TASK_ID", "").strip()
+        if not task_id:
+            return
+        values = {}
+        if content_inserted:
+            values["content_inserted"] = func.coalesce(WebUITask.content_inserted, 0) + 1
+        if content_updated:
+            values["content_updated"] = func.coalesce(WebUITask.content_updated, 0) + 1
+        if comment_inserted:
+            values["comment_inserted"] = func.coalesce(WebUITask.comment_inserted, 0) + 1
+        if comment_updated:
+            values["comment_updated"] = func.coalesce(WebUITask.comment_updated, 0) + 1
+        if content_inserted or comment_inserted:
+            values["items_count"] = func.coalesce(WebUITask.items_count, 0) + 1
+        if not values:
+            return
+        await session.execute(
+            update(WebUITask)
+            .where(WebUITask.task_id == task_id)
+            .values(**values)
+        )
 
     async def store_content(self, content_item: Dict):
         """
@@ -118,11 +148,13 @@ class WeiboDbStoreImplement(AbstractStore):
                 for key, value in content_item.items():
                     if hasattr(db_note, key):
                         setattr(db_note, key, value)
+                await self._incr_task_stats(session, content_updated=True)
             else:
                 content_item["add_ts"] = utils.get_current_timestamp()
                 content_item["last_modify_ts"] = utils.get_current_timestamp()
                 db_note = WeiboNote(**content_item)
                 session.add(db_note)
+                await self._incr_task_stats(session, content_inserted=True)
             await session.commit()
 
     async def store_comment(self, comment_item: Dict):
@@ -144,11 +176,13 @@ class WeiboDbStoreImplement(AbstractStore):
                 for key, value in comment_item.items():
                     if hasattr(db_comment, key):
                         setattr(db_comment, key, value)
+                await self._incr_task_stats(session, comment_updated=True)
             else:
                 comment_item["add_ts"] = utils.get_current_timestamp()
                 comment_item["last_modify_ts"] = utils.get_current_timestamp()
                 db_comment = WeiboNoteComment(**comment_item)
                 session.add(db_comment)
+                await self._incr_task_stats(session, comment_inserted=True)
             await session.commit()
 
     async def store_creator(self, creator: Dict):

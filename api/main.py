@@ -21,6 +21,7 @@ MediaCrawler WebUI API Server
 Start command: uvicorn api.main:app --port 8080 --reload
 Or: python -m api.main
 """
+
 import asyncio
 import os
 import subprocess
@@ -35,15 +36,31 @@ from .routers.weibo_ui import router as weibo_ui_router, init_scheduler
 app = FastAPI(
     title="MediaCrawler WebUI API",
     description="API for controlling MediaCrawler from WebUI",
-    version="1.0.0"
+    version="1.0.0",
 )
+
 
 # 添加启动事件处理器
 @app.on_event("startup")
 async def startup_event():
     """应用启动时执行"""
+    # 初始化数据库表
+    from database.db import init_db
+    import config
+
+    # 无论 SAVE_DATA_OPTION 是什么，如果配置了 MySQL，都尝试初始化
+    db_type = config.SAVE_DATA_OPTION
+    if db_type not in ["db", "mysql", "sqlite"]:
+        db_type = "db"  # 默认尝试初始化 mysql
+
+    try:
+        await init_db(db_type)
+    except Exception as e:
+        print(f"Database initialization failed: {e}")
+
     # 初始化微博定时任务调度器
     init_scheduler()
+
 
 # Get webui static files directory
 WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")
@@ -76,7 +93,7 @@ async def root():
         "message": "MediaCrawler WebUI API",
         "version": "1.0.0",
         "docs": "/docs",
-        "weibo_ui": "/weibo"
+        "weibo_ui": "/weibo",
     }
 
 
@@ -103,47 +120,50 @@ async def check_environment():
     try:
         # Run uv run main.py --help command to check environment
         process = await asyncio.create_subprocess_exec(
-            "uv", "run", "main.py", "--help",
+            "uv",
+            "run",
+            "main.py",
+            "--help",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd="."  # Project root directory
+            cwd=".",  # Project root directory
         )
         stdout, stderr = await asyncio.wait_for(
             process.communicate(),
-            timeout=30.0  # 30 seconds timeout
+            timeout=30.0,  # 30 seconds timeout
         )
 
         if process.returncode == 0:
             return {
                 "success": True,
                 "message": "MediaCrawler environment configured correctly",
-                "output": stdout.decode("utf-8", errors="ignore")[:500]  # Truncate to first 500 characters
+                "output": stdout.decode("utf-8", errors="ignore")[
+                    :500
+                ],  # Truncate to first 500 characters
             }
         else:
-            error_msg = stderr.decode("utf-8", errors="ignore") or stdout.decode("utf-8", errors="ignore")
+            error_msg = stderr.decode("utf-8", errors="ignore") or stdout.decode(
+                "utf-8", errors="ignore"
+            )
             return {
                 "success": False,
                 "message": "Environment check failed",
-                "error": error_msg[:500]
+                "error": error_msg[:500],
             }
     except asyncio.TimeoutError:
         return {
             "success": False,
             "message": "Environment check timeout",
-            "error": "Command execution exceeded 30 seconds"
+            "error": "Command execution exceeded 30 seconds",
         }
     except FileNotFoundError:
         return {
             "success": False,
             "message": "uv command not found",
-            "error": "Please ensure uv is installed and configured in system PATH"
+            "error": "Please ensure uv is installed and configured in system PATH",
         }
     except Exception as e:
-        return {
-            "success": False,
-            "message": "Environment check error",
-            "error": str(e)
-        }
+        return {"success": False, "message": "Environment check error", "error": str(e)}
 
 
 @app.get("/api/config/platforms")

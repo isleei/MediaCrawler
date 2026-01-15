@@ -5,16 +5,6 @@
 # Repository: https://github.com/NanmiCoder/MediaCrawler/blob/main/api/routers/weibo_ui.py
 # GitHub: https://github.com/NanmiCoder
 # Licensed under NON-COMMERCIAL LEARNING LICENSE 1.1
-#
-# 声明：本代码仅供学习和研究目的使用。使用者应遵守以下原则：
-# 1. 不得用于任何商业用途。
-# 2. 使用时应遵守目标平台的使用条款和robots.txt规则。
-# 3. 不得进行大规模爬取或对平台造成运营干扰。
-# 4. 应合理控制请求频率，避免给目标平台带来不必要的负担。
-# 5. 不得用于任何非法或不当的用途。
-#
-# 详细许可条款请参阅项目根目录下的LICENSE文件。
-# 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
 import json
 import logging
@@ -26,15 +16,17 @@ import subprocess
 import threading
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from typing import Dict
 from urllib.parse import parse_qs, unquote, urlparse
 
-import redis
 import httpx
+import redis
 from dotenv import load_dotenv
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
+from sqlalchemy import text
+
+from ..services.weibo_storage import weibo_storage
 
 load_dotenv()
 
@@ -44,6 +36,7 @@ DATA_DIR = "data"
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 LOG_DIR = os.path.join(ROOT_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "web.log")
+TASK_LOG_DIR = os.path.join(LOG_DIR, "tasks")
 
 app_logger = logging.getLogger("weibo-ui")
 app_logger.setLevel(logging.INFO)
@@ -58,174 +51,331 @@ try:
 except PermissionError:
     app_logger.warning("日志目录不可写，跳过文件日志配置")
 
-COOKIE_PREFIX = os.getenv("COOKIE_PREFIX", "weibo:cookie:")
-COOKIE_INDEX_LIST = os.getenv("COOKIE_INDEX_LIST", "weibo:cookies")
-COOKIE_INDEX_SET = os.getenv("COOKIE_INDEX_SET", "weibo:cookies:set")
-COOKIE_BUNDLE_PREFIX = os.getenv("COOKIE_BUNDLE_PREFIX", "weibo:cookie:bundle:")
-COOKIE_BUNDLE_INDEX_LIST = os.getenv("COOKIE_BUNDLE_INDEX_LIST", "weibo:cookie:bundles")
-COOKIE_BUNDLE_INDEX_SET = os.getenv("COOKIE_BUNDLE_INDEX_SET", "weibo:cookie:bundles:set")
+# Configs
 DEFAULT_COOKIE_BUNDLE_NAME = os.getenv("WEIBO_COOKIE_BUNDLE_NAME", "")
 MONITOR_COOKIE_BUNDLE_NAME = os.getenv("MONITOR_COOKIE_BUNDLE_NAME", "")
-TASK_ID_KEY = os.getenv("TASK_ID_KEY", "weibo:task:id")
-TASK_INDEX_LIST = os.getenv("TASK_INDEX_LIST", "weibo:tasks")
-TASK_INDEX_SET = os.getenv("TASK_INDEX_SET", "weibo:tasks:set")
-TASK_LOG_PREFIX = os.getenv("TASK_LOG_PREFIX", "weibo:task:logs:")
-REDIS_TASK_DATA_PREFIX = os.getenv("REDIS_TASK_DATA_PREFIX", "weibo:task:data:")
-SENTI_REDIS_PREFIX = os.getenv("SENTI_REDIS_PREFIX", "weibo:senti:")
-TASK_STATS_PREFIX = os.getenv("TASK_STATS_PREFIX", "weibo:task:stats:")
-PROXY_INDEX_LIST = os.getenv("PROXY_INDEX_LIST", "weibo:proxies")
-PROXY_INDEX_SET = os.getenv("PROXY_INDEX_SET", "weibo:proxies:set")
-TASK_SPIDER_AUTOSTART = os.getenv("MONITOR_SPIDER_AUTOSTART", "1") not in (
-    "0",
-    "false",
-    "False",
-)
-TASK_SPIDER_CMD = os.getenv(
-    "MONITOR_TASK_SPIDER_CMD", "uv run python main.py --platform wb --type search"
-)
-TASK_SPIDER_LOCK_PREFIX = os.getenv("MONITOR_TASK_SPIDER_LOCK_PREFIX", "weibo:task:running:")
-
-# 批量执行相关 Redis 键
-BATCH_ID_KEY = os.getenv("BATCH_ID_KEY", "weibo:batch:id")
-BATCH_INDEX_LIST = os.getenv("BATCH_INDEX_LIST", "weibo:batches")
-BATCH_INDEX_SET = os.getenv("BATCH_INDEX_SET", "weibo:batches:set")
-BATCH_PREFIX = os.getenv("BATCH_PREFIX", "weibo:batch:")
-BATCH_LOG_PREFIX = os.getenv("BATCH_LOG_PREFIX", "weibo:batch:logs:")
-
-# 定时任务相关 Redis 键
-SCHEDULE_CONFIG_KEY = os.getenv("SCHEDULE_CONFIG_KEY", "weibo:schedule:config")
-SCHEDULE_LOCK_KEY = os.getenv("SCHEDULE_LOCK_KEY", "weibo:schedule:lock")
-
+TASK_ID_KEY = "weibo:task:id"
+BATCH_ID_KEY = "weibo:batch:id"
+TASK_SPIDER_AUTOSTART = os.getenv("MONITOR_SPIDER_AUTOSTART", "1") not in ("0", "false", "False")
+TASK_SPIDER_CMD = os.getenv("MONITOR_TASK_SPIDER_CMD", "uv run python main.py --platform wb --type search")
+TASK_SPIDER_LOCK_PREFIX = "weibo:task:running:"
 DEFAULT_PAGE_SIZE = int(os.getenv("DEFAULT_MAX_PAGES", "5"))
 WEIBO_PAGE_SIZE = int(os.getenv("WEIBO_PAGE_SIZE", "10"))
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "1"))  # 最大并发任务数
+ENABLE_COOKIE_RETRY = os.getenv("ENABLE_COOKIE_RETRY", "1") not in ("0", "false", "False")  # 启用 Cookie 重试
+MAX_COOKIE_RETRY = int(os.getenv("MAX_COOKIE_RETRY", "2"))  # Cookie 失败后最大重试次数
 
-redis_client = redis.Redis(
-    host=os.getenv("REDIS_HOST", "127.0.0.1"),
-    port=int(os.getenv("REDIS_PORT", "6379")),
-    db=int(os.getenv("REDIS_DB", "0")),
-    password=os.getenv("REDIS_PASSWORD") or None,
-    decode_responses=True,
-)
+# Using weibo_storage's engine if available
+monitor_engine = weibo_storage.engine
 
-_monitor_mysql_flag = os.getenv("MONITOR_MYSQL_ENABLED")
-MONITOR_MYSQL_ENABLED = True if _monitor_mysql_flag is None else _monitor_mysql_flag in (
-    "1",
-    "true",
-    "True",
-)
-MONITOR_MYSQL_HOST = os.getenv("MONITOR_MYSQL_HOST", os.getenv("MYSQL_DB_HOST", "127.0.0.1"))
-MONITOR_MYSQL_PORT = int(os.getenv("MONITOR_MYSQL_PORT", os.getenv("MYSQL_DB_PORT", "3306")))
-MONITOR_MYSQL_DBNAME = os.getenv("MONITOR_MYSQL_DBNAME", os.getenv("MYSQL_DB_NAME", "yuqing"))
-MONITOR_MYSQL_USER = os.getenv("MONITOR_MYSQL_USER", os.getenv("MYSQL_DB_USER", "root"))
-MONITOR_MYSQL_PASSWORD = os.getenv("MONITOR_MYSQL_PASSWORD", os.getenv("MYSQL_DB_PWD", ""))
-MONITOR_MYSQL_CHARSET = os.getenv("MONITOR_MYSQL_CHARSET", os.getenv("MYSQL_CHARSET", "utf8mb4"))
+# 任务队列管理
+task_queue_lock = threading.Lock()
+running_task_cookies = {}  # {task_id: cookie_bundle_name}
+task_cookie_history = {}  # {task_id: [cookie1, cookie2, ...]} 记录任务使用过的 Cookie
+task_retry_count = {}  # {task_id: retry_count} 记录任务重试次数
 
-monitor_engine = None
-if MONITOR_MYSQL_ENABLED:
-    # Use utility function to create engine with safe password handling
-    from database.db_utils import create_mysql_engine_safe
+def init_task_queue():
+    """初始化任务队列，恢复运行中的任务状态"""
+    app_logger.info("Initializing task queue...")
 
-    monitor_engine = create_mysql_engine_safe(
-        host=MONITOR_MYSQL_HOST,
-        port=MONITOR_MYSQL_PORT,
-        user=MONITOR_MYSQL_USER,
-        password=MONITOR_MYSQL_PASSWORD,
-        database=MONITOR_MYSQL_DBNAME,
-        charset=MONITOR_MYSQL_CHARSET,
-    )
+    tasks = weibo_storage.list_tasks()
+    recovered_count = 0
+    cleaned_count = 0
 
+    for task in tasks:
+        if task.get("status") == "running":
+            task_id = task.get("id")
+            pid = task.get("pid")
+            cookie_name = task.get("data_key")  # 从任务中读取使用的 cookie
 
-def task_key(task_id):
-    return f"weibo:task:{task_id}"
+            # 检查进程是否还在运行
+            if _is_process_alive(pid):
+                # 恢复 cookie 分配
+                if cookie_name:
+                    with task_queue_lock:
+                        running_task_cookies[task_id] = cookie_name
+                    app_logger.info(f"Recovered task {task_id} with cookie {cookie_name}")
+                    recovered_count += 1
+                else:
+                    app_logger.warning(f"Task {task_id} is running but has no cookie assigned")
+            else:
+                # 进程已死，清理状态
+                update_task(task_id, {
+                    "status": "stopped",
+                    "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "pid": ""
+                })
+                append_task_log(task_id, "服务器重启后检测到进程已停止")
+                app_logger.info(f"Cleaned up dead task {task_id}")
+                cleaned_count += 1
 
+    app_logger.info(f"Task queue initialized: {recovered_count} recovered, {cleaned_count} cleaned")
 
-def cookie_key(name):
-    return f"{COOKIE_PREFIX}{name}"
+    # 处理队列中的任务
+    try:
+        process_queued_tasks()
+    except Exception as e:
+        app_logger.error(f"Error processing queued tasks on init: {e}")
 
+def get_available_cookie_bundle(exclude_cookies=None):
+    """获取可用的 cookie bundle（未被其他任务使用）
 
-def task_log_key(task_id):
-    return f"{TASK_LOG_PREFIX}{task_id}"
+    Args:
+        exclude_cookies: 要排除的 cookie 列表（例如任务已经尝试过的 cookie）
+    """
+    bundles = list_cookie_bundles()
+    if not bundles:
+        return None
 
+    # 过滤出启用的 bundle
+    enabled_bundles = [b for b in bundles if b.get("enabled", "1") not in ("0", "false", "False")]
+    if not enabled_bundles:
+        return None
 
-def task_data_key(task_id):
-    return f"{REDIS_TASK_DATA_PREFIX}{task_id}"
+    # 找出未被使用的 bundle
+    used_bundles = set(running_task_cookies.values())
+    available_bundles = [b for b in enabled_bundles if b.get("name") not in used_bundles]
 
+    # 排除已经尝试过的 cookie
+    if exclude_cookies:
+        available_bundles = [b for b in available_bundles if b.get("name") not in exclude_cookies]
 
-def task_stats_key(task_id):
-    return f"{TASK_STATS_PREFIX}{task_id}"
+    if not available_bundles:
+        return None
 
+    # 优先选择状态为 ok 的 bundle
+    healthy_bundles = [b for b in available_bundles if b.get("status") == "ok"]
+    if healthy_bundles:
+        return healthy_bundles[0].get("name")
 
-def cookie_bundle_key(name):
-    return f"{COOKIE_BUNDLE_PREFIX}{name}"
+    # 如果没有健康的，返回第一个可用的
+    return available_bundles[0].get("name")
 
+def get_running_tasks_count():
+    """获取当前运行中的任务数量"""
+    with task_queue_lock:
+        return len(running_task_cookies)
 
-def sentiment_key(word_type):
-    return f"{SENTI_REDIS_PREFIX}{word_type}"
+def can_start_new_task():
+    """检查是否可以启动新任务"""
+    return get_running_tasks_count() < MAX_CONCURRENT_TASKS
 
+def allocate_cookie_for_task(task_id):
+    """为任务分配 cookie"""
+    with task_queue_lock:
+        # 获取任务已经尝试过的 cookie
+        tried_cookies = task_cookie_history.get(task_id, [])
+        cookie_bundle = get_available_cookie_bundle(exclude_cookies=tried_cookies)
 
-def batch_key(batch_id):
-    return f"{BATCH_PREFIX}{batch_id}"
+        if cookie_bundle:
+            running_task_cookies[task_id] = cookie_bundle
+            # 记录使用历史
+            if task_id not in task_cookie_history:
+                task_cookie_history[task_id] = []
+            task_cookie_history[task_id].append(cookie_bundle)
 
+        return cookie_bundle
 
-def batch_log_key(batch_id):
-    return f"{BATCH_LOG_PREFIX}{batch_id}"
+def release_cookie_for_task(task_id):
+    """释放任务的 cookie"""
+    with task_queue_lock:
+        if task_id in running_task_cookies:
+            del running_task_cookies[task_id]
 
+def clear_task_history(task_id):
+    """清除任务的历史记录（任务完成或最终失败时调用）"""
+    with task_queue_lock:
+        task_cookie_history.pop(task_id, None)
+        task_retry_count.pop(task_id, None)
 
+def should_retry_with_new_cookie(task_id, return_code):
+    """判断是否应该使用新 Cookie 重试
+
+    Args:
+        task_id: 任务 ID
+        return_code: 进程返回码
+
+    Returns:
+        bool: 是否应该重试
+    """
+    if not ENABLE_COOKIE_RETRY:
+        return False
+
+    # 获取重试次数
+    retry_count = task_retry_count.get(task_id, 0)
+    if retry_count >= MAX_COOKIE_RETRY:
+        app_logger.info(f"Task {task_id} reached max retry limit ({MAX_COOKIE_RETRY})")
+        return False
+
+    # 只有微博接口相关错误才触发 Cookie 重试/禁用
+    if return_code != 0:
+        logs = _read_task_log_lines(task_id, limit=200)
+        if not logs:
+            return False
+        error_markers = (
+            "[WeiboClient.request] request",
+            "[WeiboClient.pong] cookie may be invalid",
+            "[WeiboClient.pong] Pong weibo failed",
+            "get response code error:",
+            "err code: 403",
+            "err code: 418",
+            "err code: 429",
+            "err code: 432",
+        )
+        for line in logs:
+            if any(marker in line for marker in error_markers):
+                return True
+        return False
+
+    return False
+
+def retry_task_with_new_cookie(task_id, keyword, max_pages):
+    """使用新的 Cookie 重试任务"""
+    with task_queue_lock:
+        retry_count = task_retry_count.get(task_id, 0)
+        task_retry_count[task_id] = retry_count + 1
+
+    # 分配新的 Cookie（排除已尝试过的）
+    cookie_bundle = allocate_cookie_for_task(task_id)
+
+    if cookie_bundle:
+        tried_cookies = task_cookie_history.get(task_id, [])
+        app_logger.info(f"Retrying task {task_id} with new cookie: {cookie_bundle} (tried: {tried_cookies})")
+        append_task_log(task_id, f"Cookie 失效，使用新 Cookie 重试: {cookie_bundle} (第 {task_retry_count[task_id]} 次重试)")
+        _start_task_with_cookie(task_id, keyword, max_pages, cookie_bundle)
+        return True
+    else:
+        app_logger.warning(f"No available cookie for retry task {task_id}")
+        append_task_log(task_id, "没有可用的 Cookie 进行重试，任务失败")
+        update_task(task_id, {"status": "failed"})
+        clear_task_history(task_id)
+        return False
+
+def process_queued_tasks():
+    """处理队列中的任务"""
+    tasks = weibo_storage.list_tasks()
+    queued_tasks = [t for t in tasks if t.get("status") == "queued"]
+
+    for task in queued_tasks:
+        if not can_start_new_task():
+            break
+
+        task_id = task.get("id")
+        cookie_bundle = allocate_cookie_for_task(task_id)
+
+        if cookie_bundle:
+            app_logger.info(f"Starting queued task {task_id} with cookie bundle: {cookie_bundle}")
+            _start_task_with_cookie(task_id, task.get("keyword"), task.get("max_pages"), cookie_bundle)
+        else:
+            app_logger.warning(f"No available cookie bundle for task {task_id}")
+            break
+
+# Helper functions
 def save_task(task):
-    task_id = task["id"]
-    key = task_key(task_id)
-    mapping = {k: str(v) for k, v in task.items()}
-    redis_client.hset(key, mapping=mapping)
-    if redis_client.sadd(TASK_INDEX_SET, str(task_id)):
-        redis_client.rpush(TASK_INDEX_LIST, str(task_id))
-    redis_client.delete(task_log_key(task_id))
-    redis_client.delete(task_stats_key(task_id))
-
+    weibo_storage.save_task(task)
 
 def update_task(task_id, mapping):
-    key = task_key(task_id)
-    redis_client.hset(key, mapping={k: str(v) for k, v in mapping.items()})
-
+    weibo_storage.update_task(task_id, mapping)
 
 def get_task(task_id):
-    data = redis_client.hgetall(task_key(task_id))
-    if not data:
-        return None
-    return normalize_task(data)
-
-
-def normalize_task(data):
-    task = dict(data)
-    task["id"] = int(task["id"])
-    task["max_pages"] = int(task.get("max_pages", 0))
-    task["items_count"] = int(task.get("items_count", 0))
-    task["with_comments"] = int(task.get("with_comments", 0))
-    return task
-
+    return weibo_storage.get_task(task_id)
 
 def append_task_log(task_id, line):
-    if line is None:
-        return
-    key = task_log_key(task_id)
-    redis_client.rpush(key, line)
+    weibo_storage.append_log(task_id, line)
 
+def _read_task_log_lines(task_id: int, limit: int = 200):
+    # 优先读取日志文件（实际的爬虫日志都在文件中）
+    log_path = os.path.join(TASK_LOG_DIR, f"task_{task_id}.log")
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().splitlines()
+                return content[-limit:]
+        except Exception as exc:
+            app_logger.warning(f"Read task log file failed: {exc}")
+
+    # 如果文件不存在或读取失败，才从数据库读取
+    lines = weibo_storage.get_logs(task_id, limit)
+    return lines if lines else []
+
+def update_batch(batch_id, mapping):
+    """更新批次信息"""
+    if not weibo_storage.mysql_enabled: return
+    db = weibo_storage._get_db()
+    try:
+        from database.models import WebUIBatch
+        batch = db.query(WebUIBatch).filter(WebUIBatch.batch_id == str(batch_id)).first()
+        if batch:
+            for k, v in mapping.items():
+                if k == "task_ids" and isinstance(v, list):
+                    v = json.dumps(v)
+                if hasattr(batch, k):
+                    setattr(batch, k, v)
+            db.commit()
+    finally:
+        db.close()
+
+def _parse_stats_value(value: str):
+    if value is None:
+        return 0
+    text = str(value).strip()
+    if not text:
+        return 0
+    try:
+        if text.isdigit():
+            return int(text)
+        return float(text)
+    except ValueError:
+        return text
+
+def _get_task_stats_from_redis(task_id: str) -> Dict:
+    try:
+        client = redis.Redis(
+            host=os.getenv("REDIS_HOST", "127.0.0.1"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            db=int(os.getenv("REDIS_DB", "0")),
+            password=os.getenv("REDIS_PASSWORD") or None,
+            decode_responses=True,
+        )
+        prefix = os.getenv("TASK_STATS_PREFIX", "weibo:task:stats:")
+        key = f"{prefix}{task_id}"
+        data = client.hgetall(key) or {}
+        return {k: _parse_stats_value(v) for k, v in data.items()}
+    except Exception as exc:
+        app_logger.warning(f"Task stats redis read failed: {exc}")
+        return {}
+
+def _get_task_stats_from_mysql(task_id: str) -> Dict:
+    if not weibo_storage.mysql_enabled:
+        return {}
+    db = weibo_storage._get_db()
+    try:
+        from database.models import WebUITask
+        task = db.query(WebUITask).filter(WebUITask.task_id == str(task_id)).first()
+        if not task:
+            return {}
+        return {
+            "pages_crawled": task.pages_crawled or 0,
+            "content_inserted": task.content_inserted or 0,
+            "content_updated": task.content_updated or 0,
+            "comment_inserted": task.comment_inserted or 0,
+            "comment_updated": task.comment_updated or 0,
+            "items_count": task.items_count or 0,
+        }
+    finally:
+        db.close()
 
 def _is_process_alive(pid):
+    if not pid: return False
     try:
         pid_value = int(pid)
     except (TypeError, ValueError):
         return False
     try:
-        if os.name != "nt":
-            os.kill(pid_value, 0)
-        else:
-            os.kill(pid_value, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+        os.kill(pid_value, 0)
         return True
-    return True
-
+    except (ProcessLookupError, PermissionError):
+        return False
 
 def _refresh_task_status(task):
     if not task or task.get("status") != "running":
@@ -233,153 +383,45 @@ def _refresh_task_status(task):
     task_id = task.get("id")
     pid = task.get("pid")
     if not _is_process_alive(pid):
-        proc = None
-        keyword = (task.get("keyword") or "").strip()
-        if keyword:
-            for item in _list_crawler_processes():
-                if item.get("keyword") == keyword:
-                    proc = item
-                    break
-        if proc:
-            update_task(task_id, {"pid": proc.get("pid")})
-            task["pid"] = proc.get("pid")
-            return task
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         update_task(task_id, {"status": "stopped", "finished_at": now, "pid": ""})
         append_task_log(task_id, "任务状态修复：进程不存在，标记为已停止")
         task["status"] = "stopped"
         task["finished_at"] = now
         task["pid"] = ""
+
+        # 释放 cookie 并处理队列
+        release_cookie_for_task(task_id)
+        app_logger.info(f"Task {task_id} process died, released cookie")
+
+        # 尝试启动队列中的下一个任务
+        try:
+            process_queued_tasks()
+        except Exception as e:
+            app_logger.error(f"Error processing queued tasks after refresh: {e}")
+
     return task
 
-
-def _fetch_process_info(pid):
-    try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "pid=,ppid=,pgid=,etime=,command="],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
-        return None
-    output = (result.stdout or "").strip()
-    if not output:
-        return None
-    parts = output.split(None, 4)
-    if len(parts) < 5:
-        return None
-    return {
-        "pid": parts[0],
-        "ppid": parts[1],
-        "pgid": parts[2],
-        "etime": parts[3],
-        "command": parts[4],
-    }
-
-
-def _mask_command(command):
-    if not command:
-        return command
-    if "--cookies" not in command:
-        return command
-    parts = command.split("--cookies", 1)
-    return f"{parts[0]}--cookies ***"
-
-
-def _extract_keyword_from_cmd(command):
-    if not command:
-        return ""
-    try:
-        match = re.search(r"--keywords\s+([^\s]+)", command)
-    except re.error:
-        return ""
-    return match.group(1) if match else ""
-
-
-def _list_crawler_processes():
-    try:
-        result = subprocess.run(
-            ["ps", "-ax", "-o", "pid=,ppid=,pgid=,etime=,command="],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except Exception:
-        return []
-    output = (result.stdout or "").strip()
-    if not output:
-        return []
-    processes = []
-    for line in output.splitlines():
-        if "main.py" not in line or "--platform" not in line or "--type" not in line:
-            continue
-        parts = line.split(None, 4)
-        if len(parts) < 5:
-            continue
-        raw_command = parts[4]
-        processes.append(
-            {
-                "pid": parts[0],
-                "ppid": parts[1],
-                "pgid": parts[2],
-                "etime": parts[3],
-                "command": _mask_command(raw_command),
-                "keyword": _extract_keyword_from_cmd(raw_command),
-            }
-        )
-    return processes
-
-
 def list_cookies():
-    names = redis_client.lrange(COOKIE_INDEX_LIST, 0, -1)
-    cookies = []
-    for name in names:
-        cookie = get_cookie(name)
-        if cookie:
-            cookies.append(cookie)
-    return cookies
-
+    return weibo_storage.list_cookies()
 
 def get_cookie(name):
-    data = redis_client.hgetall(cookie_key(name))
-    if not data:
-        return None
-    data.setdefault("enabled", "1")
-    data.setdefault("status", "unknown")
-    return dict(data)
-
+    return weibo_storage.get_cookie(name)
 
 def save_cookie(name, payload):
-    key = cookie_key(name)
-    payload = {k: str(v) for k, v in payload.items()}
-    payload.setdefault("enabled", "1")
-    payload.setdefault("status", "unknown")
-    redis_client.hset(key, mapping=payload)
-    if redis_client.sadd(COOKIE_INDEX_SET, name):
-        redis_client.rpush(COOKIE_INDEX_LIST, name)
-
+    weibo_storage.save_cookie(name, payload)
 
 def delete_cookie(name):
-    redis_client.delete(cookie_key(name))
-    redis_client.lrem(COOKIE_INDEX_LIST, 0, name)
-    redis_client.srem(COOKIE_INDEX_SET, name)
-
+    weibo_storage.delete_cookie(name)
 
 def list_sentiment_words(word_type):
-    return sorted(redis_client.smembers(sentiment_key(word_type)))
-
+    return weibo_storage.list_sentiment_words(word_type)
 
 def add_sentiment_word(word_type, word):
-    redis_client.sadd(sentiment_key(word_type), word)
-
+    weibo_storage.add_sentiment_word(word_type, word)
 
 def get_cookie_bundle(name):
-    data = redis_client.hgetall(cookie_bundle_key(name))
-    if not data:
-        return None
-    return dict(data)
-
+    return weibo_storage.get_cookie_bundle(name)
 
 def get_cookie_string(preferred_bundle_name=""):
     bundle_name = get_cookie_bundle_name(preferred_bundle_name)
@@ -387,87 +429,59 @@ def get_cookie_string(preferred_bundle_name=""):
         bundle = get_cookie_bundle(bundle_name)
         if bundle and bundle.get("cookie_string"):
             return bundle["cookie_string"]
-
     return ""
-
 
 def get_cookie_bundle_name(preferred_bundle_name=""):
     if preferred_bundle_name:
         bundle = get_cookie_bundle(preferred_bundle_name)
-        if bundle and bundle.get("cookie_string") and bundle.get("enabled", "1") not in (
-            "0",
-            "false",
-            "False",
-        ):
+        if bundle and bundle.get("cookie_string") and bundle.get("enabled", "1") not in ("0", "false", "False"):
             return preferred_bundle_name
-
-    names = redis_client.lrange(COOKIE_BUNDLE_INDEX_LIST, 0, -1)
-    if names:
-        for name in reversed(names):
-            bundle = get_cookie_bundle(name)
-            if bundle and bundle.get("cookie_string") and bundle.get("enabled", "1") not in (
-                "0",
-                "false",
-                "False",
-            ):
-                return name
-
+    bundles = weibo_storage.list_cookie_bundles()
+    if bundles:
+        for bundle in reversed(bundles):
+            if bundle and bundle.get("cookie_string") and bundle.get("enabled", "1") not in ("0", "false", "False"):
+                return bundle.get("name")
     return ""
 
-
 def remove_sentiment_word(word_type, word):
-    redis_client.srem(sentiment_key(word_type), word)
-
+    weibo_storage.remove_sentiment_word(word_type, word)
 
 def add_sentiment_words(word_type, words):
     if isinstance(words, str):
         entries = [w.strip() for w in words.splitlines()]
     else:
         entries = [str(w).strip() for w in words]
-    entries = [w for w in entries if w]
-    if entries:
-        redis_client.sadd(sentiment_key(word_type), *entries)
-
+    for w in [e for e in entries if e]:
+        weibo_storage.add_sentiment_word(word_type, w)
 
 def list_cookie_bundles():
-    names = redis_client.lrange(COOKIE_BUNDLE_INDEX_LIST, 0, -1)
-    bundles = []
-    for name in names:
-        data = redis_client.hgetall(cookie_bundle_key(name))
-        if data:
-            data.setdefault("enabled", "1")
-            data.setdefault("status", "unknown")
-            bundles.append(data)
-    return bundles
-
+    return weibo_storage.list_cookie_bundles()
 
 def save_cookie_bundle(name, cookie_string, proxies, user_agent=""):
-    key = cookie_bundle_key(name)
-    proxy_list = []
-    if isinstance(proxies, str):
-        proxy_list = [p.strip() for p in proxies.replace(",", "\n").splitlines() if p.strip()]
-    elif isinstance(proxies, list):
-        proxy_list = [str(p).strip() for p in proxies if str(p).strip()]
-    proxies_value = json.dumps(proxy_list, ensure_ascii=False) if proxy_list else ""
-    payload = {
-        "name": str(name),
-        "cookie_string": str(cookie_string),
-        "proxies": proxies_value,
-        "user_agent": str(user_agent or ""),
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "enabled": "1",
-        "status": "unknown",
-    }
-    redis_client.hset(key, mapping=payload)
-    if redis_client.sadd(COOKIE_BUNDLE_INDEX_SET, name):
-        redis_client.rpush(COOKIE_BUNDLE_INDEX_LIST, name)
-
+    weibo_storage.save_cookie_bundle(name, cookie_string, proxies, user_agent)
 
 def delete_cookie_bundle(name):
-    redis_client.delete(cookie_bundle_key(name))
-    redis_client.lrem(COOKIE_BUNDLE_INDEX_LIST, 0, name)
-    redis_client.srem(COOKIE_BUNDLE_INDEX_SET, name)
+    weibo_storage.delete_cookie_bundle(name)
 
+def _update_cookie_bundle_status(name, enabled, status, reason=""):
+    weibo_storage.update_cookie_bundle_status(name, enabled, status, reason)
+
+def list_proxies():
+    return weibo_storage.list_proxies()
+
+def add_proxy(proxy):
+    weibo_storage.add_proxy(proxy)
+
+def add_proxies(proxies):
+    if isinstance(proxies, str):
+        items = [p.strip() for p in proxies.replace(",", "\n").splitlines() if p.strip()]
+    else:
+        items = [str(p).strip() for p in proxies if str(p).strip()]
+    for p in items:
+        weibo_storage.add_proxy(p)
+
+def delete_proxy(proxy):
+    weibo_storage.delete_proxy(proxy)
 
 def _validate_cookie_string(cookie_string, user_agent=""):
     if not cookie_string:
@@ -485,1395 +499,833 @@ def _validate_cookie_string(cookie_string, user_agent=""):
         login_flag = bool((data.get("data") or {}).get("login") or data.get("login"))
     return login_flag, "ok" if login_flag else "expired"
 
+# Webhook implementation
+def get_webhook_config():
+    cfg = weibo_storage.get_config("weibo:webhook:config")
+    if not cfg:
+        return {
+            "enabled": False,
+            "webhook_url": "",
+            "message_template": json.dumps({
+                "event": "cookie_validation_failed",
+                "cookie_name": "{cookie_name}",
+                "status": "{status}",
+                "reason": "{reason}",
+                "timestamp": "{timestamp}",
+            }, ensure_ascii=False),
+            "timeout": 10,
+            "custom_headers": "{}",
+        }
+    cfg["enabled"] = str(cfg.get("enabled", "0")) == "1"
+    cfg["timeout"] = int(cfg.get("timeout", 10))
+    return cfg
 
-def _update_cookie_bundle_status(name, enabled, status, reason=""):
-    key = cookie_bundle_key(name)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    mapping = {
+def save_webhook_config(webhook_url, enabled=True, message_template=None, timeout=10, custom_headers=None):
+    payload = {
         "enabled": "1" if enabled else "0",
-        "status": status,
-        "last_checked_at": now,
+        "webhook_url": str(webhook_url),
+        "message_template": str(message_template or ""),
+        "timeout": str(timeout),
+        "custom_headers": str(custom_headers or "{}"),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
-    if reason:
-        mapping["last_check_reason"] = reason
-    redis_client.hset(key, mapping=mapping)
+    weibo_storage.save_config("weibo:webhook:config", payload)
 
-
-
-
-def list_proxies():
-    return redis_client.lrange(PROXY_INDEX_LIST, 0, -1)
-
-
-def add_proxy(proxy):
-    if redis_client.sadd(PROXY_INDEX_SET, proxy):
-        redis_client.rpush(PROXY_INDEX_LIST, proxy)
-
-
-def add_proxies(proxies):
-    if isinstance(proxies, str):
-        items = [p.strip() for p in proxies.splitlines()]
-    else:
-        items = [str(p).strip() for p in proxies]
-    items = [p for p in items if p]
-    for proxy in items:
-        add_proxy(proxy)
-
-
-def delete_proxy(proxy):
-    redis_client.lrem(PROXY_INDEX_LIST, 0, proxy)
-    redis_client.srem(PROXY_INDEX_SET, proxy)
-
+def _send_webhook_with_config(cookie_name, status, reason=""):
+    config = get_webhook_config()
+    if not config.get("enabled") or not config.get("webhook_url"):
+        return False, "disabled_or_empty"
+    
+    webhook_url = config.get("webhook_url")
+    try:
+        template_dict = json.loads(config.get("message_template", "{}"))
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        variables = {"cookie_name": cookie_name, "status": status, "reason": reason, "timestamp": timestamp}
+        payload = {}
+        for key, value in template_dict.items():
+            if isinstance(value, str):
+                for var_name, var_value in variables.items():
+                    value = value.replace(f"{{{var_name}}}", str(var_value))
+            payload[key] = value
+        
+        headers = json.loads(config.get("custom_headers", "{}"))
+        headers.setdefault("Content-Type", "application/json")
+        timeout = int(config.get("timeout", 10))
+        
+        resp = httpx.post(webhook_url, json=payload, timeout=timeout, headers=headers)
+        if 200 <= resp.status_code < 300:
+            app_logger.info(f"Webhook Notification Success: {cookie_name}")
+            return True, "success"
+        else:
+            return False, f"http_{resp.status_code}"
+    except Exception as exc:
+        app_logger.error(f"Webhook Notification Error: {exc}")
+        return False, str(exc)
 
 def extract_keyword_from_url(url):
     try:
         parsed = urlparse(url)
         params = parse_qs(parsed.query)
-        if "q" in params:
-            return params["q"][0]
+        if "q" in params: return params["q"][0]
         if "containerid" in params:
             raw = unquote(params["containerid"][0])
-            if "q=" in raw:
-                return parse_qs(raw).get("q", [""])[0]
-    except Exception:
-        return ""
+            if "q=" in raw: return parse_qs(raw).get("q", [""])[0]
+    except: pass
     return ""
-
-
-def upsert_task_from_monitor(row, status):
-    ms_id = int(row["ms_id"])
-    keyword = row.get("ms_keys") or extract_keyword_from_url(row.get("ms_start_url") or "") or ""
-    max_pages = int(os.getenv("DEFAULT_MAX_PAGES", str(DEFAULT_PAGE_SIZE)))
-    with_comments = os.getenv("MONITOR_DEFAULT_WITH_COMMENTS", "1") in ("1", "true", "True")
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    existing = get_task(ms_id) or {}
-    payload = {
-        "id": ms_id,
-        "keyword": keyword,
-        "max_pages": max_pages,
-        "with_comments": 1 if with_comments else 0,
-        "status": status,
-        "created_at": existing.get("created_at") if existing else now,
-        "started_at": now if status == "running" else (existing.get("started_at") if existing else ""),
-        "finished_at": existing.get("finished_at") if existing else "",
-        "items_count": existing.get("items_count") if existing else 0,
-        "output_file": existing.get("output_file") if existing else "",
-        "data_key": task_data_key(ms_id),
-    }
-    save_task(payload)
-
 
 def _build_crawler_cmd(keyword, max_pages, with_comments, cookies="", headless=True):
     max_notes = max(int(max_pages), 1) * WEIBO_PAGE_SIZE
-    cmd = [
-        "uv",
-        "run",
-        "python",
-        "main.py",
-        "--platform",
-        "wb",
-        "--type",
-        "search",
-        "--keywords",
-        str(keyword),
-        "--get_comment",
-        "true" if with_comments else "false",
-        "--save_data_option",
-        "compat",
-        "--max_notes",
-        str(max_notes),
-    ]
-    if headless:
-        cmd.extend(["--headless", "true"])
-    if cookies:
-        cmd.extend(["--lt", "cookie", "--cookies", cookies])
+    cmd = ["uv", "run", "python", "-u", "main.py", "--platform", "wb", "--type", "search",
+           "--keywords", str(keyword), "--get_comment", "true" if with_comments else "false",
+           "--save_data_option", "db", "--max_notes", str(max_notes)]
+    if headless: cmd.extend(["--headless", "true"])
+    if cookies: cmd.extend(["--lt", "cookie", "--cookies", cookies])
     return cmd
 
-
-def start_task(task_id, keyword, max_pages):
-    """启动爬虫任务（后台运行）"""
-
-    def update_task_status(status, count=0):
-        existing = get_task(task_id) or {}
-        if existing.get("status") == "stopped":
-            return
-        payload = {"status": status}
-        if status in ("completed", "failed"):
-            payload.update(
-                {
-                    "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "items_count": count,
-                    "pid": "",
-                }
-            )
-        update_task(task_id, payload)
-
+def _start_task_with_cookie(task_id, keyword, max_pages, cookie_bundle_name):
+    """使用指定的 cookie bundle 启动任务"""
     def _run():
         task = get_task(task_id) or {}
-
-        # Clear old logs before starting new task
-        log_key = task_log_key(task_id)
-        redis_client.delete(log_key)
-
+        return_code = None
         try:
-            cookie_bundle_name = get_cookie_bundle_name(DEFAULT_COOKIE_BUNDLE_NAME)
-            cookie_string = get_cookie_string(DEFAULT_COOKIE_BUNDLE_NAME)
-            cmd = _build_crawler_cmd(
-                keyword=keyword,
-                max_pages=max_pages,
-                with_comments=task.get("with_comments", 0),
-                cookies=cookie_string,
-                headless=True,
-            )
-            append_task_log(task_id, f"启动任务: {' '.join(cmd)}")
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=ROOT_DIR,
-                env={
-                    **os.environ,
-                    "CRAWLER_TASK_ID": str(task_id),
-                    "CRAWLER_TASK_SOURCE": "ui",
-                    "CRAWLER_COOKIE_BUNDLE_NAME": cookie_bundle_name or "",
-                },
-                start_new_session=True,
-            )
-            update_task(
-                task_id,
-                {
-                    "status": "running",
-                    "started_at": task.get("started_at")
-                    or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "pid": process.pid,
-                },
-            )
+            # 获取指定 bundle 的 cookie
+            bundle = get_cookie_bundle(cookie_bundle_name)
+            cookie_string = bundle.get("cookie_string", "") if bundle else ""
 
-            for line in process.stdout:
-                append_task_log(task_id, line.rstrip())
+            if not cookie_string:
+                append_task_log(task_id, f"警告: Cookie bundle '{cookie_bundle_name}' 没有 cookie 字符串")
 
+            cmd = _build_crawler_cmd(keyword, max_pages, task.get("with_comments", 0), cookie_string)
+            append_task_log(task_id, f"启动任务 (Cookie: {cookie_bundle_name}): {' '.join(cmd)}")
+
+            os.makedirs(TASK_LOG_DIR, exist_ok=True)
+            log_path = os.path.join(TASK_LOG_DIR, f"task_{task_id}.log")
+            log_file = open(log_path, "a", encoding="utf-8")
+            log_file.write(f"[launcher] started_at={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            log_file.write(f"[launcher] cmd={' '.join(cmd)}\n")
+            log_file.write(f"[launcher] cwd={ROOT_DIR}\n")
+            log_file.flush()
+
+            child_env = {
+                **os.environ,
+                "CRAWLER_TASK_ID": str(task_id),
+                "CRAWLER_TASK_SOURCE": "ui",
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONIOENCODING": "utf-8",
+            }
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    cwd=ROOT_DIR,
+                    env=child_env,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+            except Exception as exc:
+                log_file.write(f"[launcher] spawn_failed: {exc}\n")
+                log_file.flush()
+                update_task(task_id, {"status": "failed", "pid": ""})
+                append_task_log(task_id, f"任务启动失败: {exc}")
+                log_file.close()
+                return
+
+            update_task(task_id, {
+                "status": "running",
+                "pid": process.pid,
+                "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "data_key": cookie_bundle_name  # 记录使用的 cookie
+            })
+
+            append_task_log(task_id, f"任务日志写入: {log_path}")
             process.wait()
-            count = redis_client.llen(task_data_key(task_id))
-            update_task_status("completed" if process.returncode == 0 else "failed", count)
+            return_code = process.returncode
+            log_file.close()
+
+            # 检查是否需要使用新 Cookie 重试
+            if should_retry_with_new_cookie(task_id, return_code):
+                append_task_log(task_id, f"检测到 Cookie 可能失效 (返回码: {return_code})，准备使用新 Cookie 重试...")
+
+                # 释放当前 Cookie
+                release_cookie_for_task(task_id)
+
+                # 标记 Cookie 为可能失效
+                _update_cookie_bundle_status(cookie_bundle_name, False, "expired")
+
+                # 使用新 Cookie 重试
+                if retry_task_with_new_cookie(task_id, keyword, max_pages):
+                    return  # 重试已启动，不继续执行后续逻辑
+
+            # 任务最终完成或失败
+            final_status = "completed" if return_code == 0 else "failed"
+            update_task(task_id, {
+                "status": final_status,
+                "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "pid": ""
+            })
+
+            append_task_log(task_id, f"任务{final_status}: 返回码 {return_code}")
+
+            # 清除任务历史
+            clear_task_history(task_id)
+
         except Exception as exc:
             append_task_log(task_id, f"任务执行错误: {exc}")
-            update_task_status("failed")
+            update_task(task_id, {"status": "failed", "pid": ""})
+            clear_task_history(task_id)
+
+        finally:
+            # 释放 cookie 并处理队列中的任务
+            release_cookie_for_task(task_id)
+            app_logger.info(f"Task {task_id} finished, released cookie: {cookie_bundle_name}")
+
+            # 尝试启动队列中的下一个任务
+            try:
+                process_queued_tasks()
+            except Exception as e:
+                app_logger.error(f"Error processing queued tasks: {e}")
 
     threading.Thread(target=_run, daemon=True).start()
 
+def start_task(task_id, keyword, max_pages):
+    """启动任务（带并发控制和 cookie 分配）"""
+    # 检查是否可以立即启动
+    if can_start_new_task():
+        cookie_bundle = allocate_cookie_for_task(task_id)
+
+        if cookie_bundle:
+            app_logger.info(f"Starting task {task_id} with cookie bundle: {cookie_bundle}")
+            _start_task_with_cookie(task_id, keyword, max_pages, cookie_bundle)
+        else:
+            # 没有可用的 cookie，加入队列
+            app_logger.info(f"No available cookie for task {task_id}, queuing...")
+            update_task(task_id, {"status": "queued"})
+            append_task_log(task_id, "任务已加入队列，等待可用的 Cookie...")
+    else:
+        # 达到并发限制，加入队列
+        app_logger.info(f"Max concurrent tasks reached, queuing task {task_id}")
+        update_task(task_id, {"status": "queued"})
+        append_task_log(task_id, f"任务已加入队列，当前运行任务数: {get_running_tasks_count()}/{MAX_CONCURRENT_TASKS}")
 
 def stop_task(task_id, pid):
+    if not pid: return False, "no_pid"
     try:
-        pid_value = int(pid)
-    except (TypeError, ValueError):
-        return False, "invalid_pid"
+        os.kill(int(pid), signal.SIGTERM)
+        update_task(task_id, {"status": "stopped", "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "pid": ""})
 
-    try:
-        if os.name != "nt":
-            os.killpg(pid_value, signal.SIGTERM)
-        else:
-            os.kill(pid_value, signal.SIGTERM)
-    except ProcessLookupError:
-        return False, "not_running"
-    except PermissionError:
-        return False, "permission_denied"
+        # 释放 cookie 并处理队列
+        release_cookie_for_task(task_id)
+        app_logger.info(f"Task {task_id} stopped, released cookie")
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    update_task(task_id, {"status": "stopped", "finished_at": now, "pid": ""})
-    append_task_log(task_id, "任务已停止")
-    return True, None
+        # 尝试启动队列中的下一个任务
+        try:
+            process_queued_tasks()
+        except Exception as e:
+            app_logger.error(f"Error processing queued tasks after stop: {e}")
 
+        return True, None
+    except:
+        return False, "kill_failed"
 
-def start_task_spider(task_id, url, lock_id=None):
-    if not TASK_SPIDER_AUTOSTART:
-        return {"started": False, "reason": "autostart_disabled"}
-
-    lock_key = f"{TASK_SPIDER_LOCK_PREFIX}{lock_id or task_id}"
-    if not redis_client.set(lock_key, "1", nx=True, ex=3600):
-        return {"started": False, "reason": "already_running"}
-
-    try:
-        log_path = os.path.join(LOG_DIR, f"task_{task_id}.log")
-        # Clear old log file by opening in write mode
-        log_file = open(log_path, "w", encoding="utf-8")
-        keyword = extract_keyword_from_url(url)
-        max_pages = int(os.getenv("DEFAULT_MAX_PAGES", str(DEFAULT_PAGE_SIZE)))
-        with_comments = os.getenv("MONITOR_DEFAULT_WITH_COMMENTS", "1")
-        with_comments_enabled = str(with_comments) in ("1", "true", "True")
-        preferred_bundle = MONITOR_COOKIE_BUNDLE_NAME or DEFAULT_COOKIE_BUNDLE_NAME
-        cookie_bundle_name = get_cookie_bundle_name(preferred_bundle)
-        cookie_string = get_cookie_string(preferred_bundle)
-        base_cmd = shlex.split(TASK_SPIDER_CMD)
-        cmd = base_cmd + [
-            "--keywords",
-            str(keyword),
-            "--get_comment",
-            "true" if with_comments_enabled else "false",
-            "--save_data_option",
-            "compat",
-            "--max_notes",
-            str(max_pages * WEIBO_PAGE_SIZE),
-            "--headless",
-            "true",
-        ]
-        if cookie_string:
-            cmd.extend(["--lt", "cookie", "--cookies", cookie_string])
-        process = subprocess.Popen(
-            cmd,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            cwd=ROOT_DIR,
-            env={
-                **os.environ,
-                "CRAWLER_TASK_ID": str(task_id),
-                "CRAWLER_TASK_SOURCE": "monitor",
-                "CRAWLER_COOKIE_BUNDLE_NAME": cookie_bundle_name or "",
-            },
-        )
-        app_logger.info("spawn task spider pid=%s cmd=%s", process.pid, " ".join(cmd))
-
-        def _wait():
-            returncode = process.wait()
-            finalize_task(task_id, returncode)
-            redis_client.delete(lock_key)
-            app_logger.info("task spider %s exited code=%s", task_id, returncode)
-
-        threading.Thread(target=_wait, daemon=True).start()
-        return {"started": True, "pid": process.pid}
-    except Exception as exc:
-        redis_client.delete(lock_key)
-        app_logger.error("spawn task spider failed: %s", exc)
-        return {"started": False, "reason": "spawn_failed", "message": str(exc)}
-
-
-def finalize_task(task_id, returncode):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    count = redis_client.llen(task_data_key(task_id))
-    update_task(
-        int(task_id),
-        {
-            "status": "completed" if returncode == 0 else "failed",
-            "finished_at": now,
-            "items_count": count,
-        },
-    )
-    append_task_log(task_id, f"任务结束，exit={returncode}，items={count}")
-
+# ========================================
+# API Routes
+# ========================================
 
 @router.get("/cookies")
-async def list_cookies_route():
-    return list_cookies()
-
+async def list_cookies_route(): return list_cookies()
 
 @router.post("/cookies")
-async def add_cookie(request: Request):
+async def add_cookie_route(request: Request):
     data = await request.json()
     name = data.get("name")
-    value = data.get("value")
-    if not name or value is None:
-        return JSONResponse({"success": False, "error": "invalid_cookie"}, status_code=400)
-
-    existing = get_cookie(name)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if existing:
-        payload = {
-            "value": value,
-            "domain": data.get("domain", existing.get("domain", ".weibo.cn")),
-            "path": data.get("path", existing.get("path", "/")),
-            "updated_at": now,
-        }
-    else:
-        payload = {
-            "name": name,
-            "value": value,
-            "domain": data.get("domain", ".weibo.cn"),
-            "path": data.get("path", "/"),
-            "created_at": now,
-            "updated_at": now,
-        }
-
-    save_cookie(name, payload)
+    if not name: return JSONResponse({"error": "missing name"}, status_code=400)
+    data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_cookie(name, data)
     return {"success": True, "cookies": list_cookies()}
-
 
 @router.delete("/cookies")
 async def delete_cookie_route(name: str):
-    if name:
-        delete_cookie(name)
-    return {"success": True, "cookies": list_cookies()}
-
+    delete_cookie(name); return {"success": True, "cookies": list_cookies()}
 
 @router.get("/cookie_bundles")
-async def list_cookie_bundles_route():
-    return list_cookie_bundles()
-
+async def list_cookie_bundles_route(): return list_cookie_bundles()
 
 @router.post("/cookie_bundles")
-async def add_cookie_bundle(request: Request):
+async def add_cookie_bundle_route(request: Request):
     data = await request.json()
     name = data.get("name")
-    cookie_string = data.get("cookie_string")
-    proxies = data.get("proxies", [])
-    user_agent = data.get("user_agent", "")
-    if not name or not cookie_string:
-        return JSONResponse({"success": False, "error": "invalid_payload"}, status_code=400)
-    save_cookie_bundle(name, cookie_string, proxies, user_agent)
+    if not name or not data.get("cookie_string"): return JSONResponse({"error": "invalid"}, status_code=400)
+    save_cookie_bundle(name, data.get("cookie_string"), data.get("proxies", []), data.get("user_agent", ""))
     return {"success": True, "bundles": list_cookie_bundles()}
-
 
 @router.delete("/cookie_bundles")
 async def delete_cookie_bundle_route(name: str):
-    if name:
-        delete_cookie_bundle(name)
-    return {"success": True, "bundles": list_cookie_bundles()}
-
+    delete_cookie_bundle(name); return {"success": True, "bundles": list_cookie_bundles()}
 
 @router.post("/cookie_bundles/{name}/validate")
-async def validate_cookie_bundle(name: str):
+async def validate_cookie_bundle_route(name: str):
     bundle = get_cookie_bundle(name)
-    if not bundle:
-        return JSONResponse({"success": False, "error": "not_found"}, status_code=404)
-    ok, status = _validate_cookie_string(
-        bundle.get("cookie_string", ""), bundle.get("user_agent", "")
-    )
-    if ok:
-        _update_cookie_bundle_status(name, True, "ok")
-    elif status == "expired":
-        _update_cookie_bundle_status(name, False, "expired")
-    else:
-        _update_cookie_bundle_status(name, True, "error", status)
-    return {"success": True, "name": name, "valid": ok, "status": status}
-
+    if not bundle: return JSONResponse({"error": "not_found"}, status_code=404)
+    ok, status = _validate_cookie_string(bundle.get("cookie_string", ""), bundle.get("user_agent", ""))
+    _update_cookie_bundle_status(name, ok, status)
+    return {"success": True, "valid": ok, "status": status}
 
 @router.post("/cookie_bundles/validate_all")
-async def validate_all_cookie_bundles():
-    results = []
-    for bundle in list_cookie_bundles():
+async def validate_all_cookie_bundles_route():
+    """批量验证所有 Cookie Bundle"""
+    bundles = list_cookie_bundles()
+    validated_count = 0
+    success_count = 0
+    failed_count = 0
+
+    for bundle in bundles:
         name = bundle.get("name")
-        ok, status = _validate_cookie_string(
-            bundle.get("cookie_string", ""), bundle.get("user_agent", "")
-        )
-        if ok:
-            _update_cookie_bundle_status(name, True, "ok")
-        elif status == "expired":
-            _update_cookie_bundle_status(name, False, "expired")
-        else:
-            _update_cookie_bundle_status(name, True, "error", status)
-        results.append({"name": name, "valid": ok, "status": status})
-    return {"success": True, "results": results}
-
-
-
-
-@router.get("/proxies")
-async def list_proxies_route():
-    return list_proxies()
-
-
-@router.post("/proxies")
-async def add_proxy_route(request: Request):
-    data = await request.json()
-    proxy = (data.get("proxy") or "").strip()
-    proxies = data.get("proxies")
-    if not proxy and not proxies:
-        return JSONResponse({"success": False, "error": "invalid_payload"}, status_code=400)
-    if proxies:
-        add_proxies(proxies)
-    else:
-        add_proxy(proxy)
-    return {"success": True, "proxies": list_proxies()}
-
-
-@router.delete("/proxies")
-async def delete_proxy_route(proxy: str):
-    proxy = (proxy or "").strip()
-    if proxy:
-        delete_proxy(proxy)
-    return {"success": True, "proxies": list_proxies()}
-
-
-@router.get("/tasks")
-async def list_tasks():
-    ids = redis_client.lrange(TASK_INDEX_LIST, 0, -1)
-    tasks = []
-    for task_id in ids:
-        task = get_task(task_id)
-        if task:
-            tasks.append(_refresh_task_status(task))
-    return tasks
-
-
-@router.get("/processes")
-async def list_task_processes():
-    ids = redis_client.lrange(TASK_INDEX_LIST, 0, -1)
-    tasks = []
-    task_by_pid = {}
-    task_by_keyword = {}
-    for task_id in ids:
-        task = get_task(task_id)
-        if not task:
+        if not name:
             continue
-        task = _refresh_task_status(task)
-        tasks.append(task)
-        if task.get("pid"):
-            task_by_pid[str(task.get("pid"))] = task
-        keyword = (task.get("keyword") or "").strip()
-        if keyword:
-            task_by_keyword[keyword] = task
 
-    processes = []
-    for proc in _list_crawler_processes():
-        task = task_by_pid.get(proc.get("pid"))
-        if not task and proc.get("keyword"):
-            task = task_by_keyword.get(proc.get("keyword"))
-        processes.append(
-            {
-                "task_id": task.get("id") if task else None,
-                "keyword": task.get("keyword") if task else proc.get("keyword"),
-                "status": task.get("status") if task else "running",
-                "started_at": task.get("started_at") if task else "",
-                "pid": proc.get("pid"),
-                "process": {
-                    "pid": proc.get("pid"),
-                    "ppid": proc.get("ppid"),
-                    "pgid": proc.get("pgid"),
-                    "etime": proc.get("etime"),
-                    "command": proc.get("command"),
-                },
-            }
-        )
-    return processes
+        validated_count += 1
+        ok, status = _validate_cookie_string(bundle.get("cookie_string", ""), bundle.get("user_agent", ""))
+        _update_cookie_bundle_status(name, ok, status)
 
+        if ok:
+            success_count += 1
+        else:
+            failed_count += 1
+            # 发送 webhook 通知（如果配置了）
+            _send_webhook_with_config(name, status, "cookie validation failed")
 
-@router.post("/tasks")
-async def create_task(request: Request):
-    data = await request.json()
-    task_id = redis_client.incr(TASK_ID_KEY)
-    new_task = {
-        "id": task_id,
-        "keyword": data.get("keyword", "Python"),
-        "max_pages": data.get("max_pages", DEFAULT_PAGE_SIZE),
-        "with_comments": 1 if data.get("with_comments") else 0,
-        "status": "pending",
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "started_at": "",
-        "finished_at": "",
-        "items_count": 0,
-        "output_file": "",
-        "data_key": task_data_key(task_id),
+    return {
+        "success": True,
+        "validated": validated_count,
+        "success_count": success_count,
+        "failed_count": failed_count
     }
 
+@router.get("/tasks")
+async def list_tasks_route():
+    return [_refresh_task_status(t) for t in weibo_storage.list_tasks()]
+
+@router.get("/tasks/queue/status")
+async def get_queue_status_route():
+    """获取任务队列状态"""
+    tasks = weibo_storage.list_tasks()
+    running_tasks = [t for t in tasks if t.get("status") == "running"]
+    queued_tasks = [t for t in tasks if t.get("status") == "queued"]
+
+    # 获取 cookie 使用情况
+    with task_queue_lock:
+        cookie_usage = dict(running_task_cookies)
+
+    return {
+        "max_concurrent": MAX_CONCURRENT_TASKS,
+        "running_count": len(running_tasks),
+        "queued_count": len(queued_tasks),
+        "running_tasks": [{"id": t.get("id"), "keyword": t.get("keyword"), "cookie": cookie_usage.get(t.get("id"))} for t in running_tasks],
+        "queued_tasks": [{"id": t.get("id"), "keyword": t.get("keyword")} for t in queued_tasks],
+        "cookie_usage": cookie_usage
+    }
+
+@router.post("/tasks")
+async def create_task_route(request: Request):
+    data = await request.json()
+    task_id = weibo_storage.get_next_id(TASK_ID_KEY)
+    new_task = {
+        "id": task_id, "keyword": data.get("keyword", "Python"),
+        "max_pages": data.get("max_pages", DEFAULT_PAGE_SIZE),
+        "with_comments": 1 if data.get("with_comments") else 0,
+        "status": "pending", "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "items_count": 0, "pid": ""
+    }
     save_task(new_task)
-    start_task(new_task["id"], new_task["keyword"], new_task["max_pages"])
+    start_task(task_id, new_task["keyword"], new_task["max_pages"])
     return {"success": True, "task": new_task}
-
-
-@router.delete("/tasks/{task_id}")
-async def delete_task(task_id: int):
-    redis_client.delete(task_key(task_id))
-    redis_client.lrem(TASK_INDEX_LIST, 0, str(task_id))
-    redis_client.srem(TASK_INDEX_SET, str(task_id))
-    return {"success": True}
-
 
 @router.post("/tasks/{task_id}/start")
 async def start_task_route(task_id: int):
     task = get_task(task_id)
-    if task and task["status"] != "running":
-        update_task(
-            task_id,
-            {
-                "status": "running",
-                "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            },
-        )
-        start_task(task_id, task["keyword"], task["max_pages"])
+    if not task:
+        return JSONResponse({"error": "task_not_found"}, status_code=404)
+    if task.get("status") == "running":
+        return {"success": True, "started": False, "reason": "already_running"}
+    start_task(task_id, task.get("keyword"), task.get("max_pages"))
+    return {"success": True, "started": True}
 
-    return {"success": True}
-
+@router.delete("/tasks/{task_id}")
+async def delete_task_route(task_id: int):
+    weibo_storage.delete_task(task_id); return {"success": True}
 
 @router.post("/tasks/{task_id}/stop")
 async def stop_task_route(task_id: int):
     task = get_task(task_id)
     if not task:
-        return JSONResponse({"success": False, "error": "task_not_found"}, status_code=404)
-    if task.get("status") != "running":
-        return JSONResponse({"success": False, "error": "not_running"}, status_code=400)
+        return JSONResponse({"error": "task_not_found"}, status_code=404)
     ok, reason = stop_task(task_id, task.get("pid"))
-    if not ok:
-        return JSONResponse({"success": False, "error": reason}, status_code=400)
-    return {"success": True}
-
-
-@router.get("/data/{filename}")
-async def download_file(filename: str):
-    path = os.path.join(DATA_DIR, filename)
-    if not os.path.exists(path):
-        return JSONResponse({"error": "file_not_found"}, status_code=404)
-    return FileResponse(path, filename=filename)
-
-
-@router.get("/data/{filename}/preview")
-async def preview_file(filename: str, limit: int = 50):
-    path = os.path.join(DATA_DIR, filename)
-    if not os.path.exists(path):
-        return JSONResponse({"error": "file_not_found"}, status_code=404)
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return JSONResponse({"error": "invalid_json"}, status_code=400)
-
-    if isinstance(data, list):
-        preview = data[: max(0, limit)]
-        return {"total": len(data), "items": preview}
-    return {"total": 1, "items": [data]}
-
+    if ok:
+        return {"success": True}
+    return JSONResponse({"error": reason or "stop_failed"}, status_code=400)
 
 @router.get("/tasks/{task_id}/logs")
-async def task_logs(task_id: int, limit: int = 200):
-    file_path = os.path.join(LOG_DIR, f"task_{task_id}.log")
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            total = len(lines)
-            if total > 0:
-                start = max(0, total - max(0, limit))
-                return {"total": total, "lines": [l.rstrip() for l in lines[start:]]}
-        except Exception:
-            pass
-    key = task_log_key(task_id)
-    total = redis_client.llen(key)
-    if total == 0:
-        return {"total": 0, "lines": []}
-
-    start = max(0, total - max(0, limit))
-    lines = redis_client.lrange(key, start, total - 1)
-    return {"total": total, "lines": lines}
-
+async def task_logs_route(task_id: int, limit: int = 200):
+    lines = _read_task_log_lines(task_id, limit)
+    return {"total": len(lines), "lines": lines}
 
 @router.get("/tasks/{task_id}/stats")
-async def task_stats(task_id: int):
-    task = get_task(task_id)
-    duration_seconds = 0
-    if task and task.get("started_at"):
-        try:
-            started = datetime.strptime(task.get("started_at"), "%Y-%m-%d %H:%M:%S")
-            finished_at = task.get("finished_at") or ""
-            if finished_at:
-                finished = datetime.strptime(finished_at, "%Y-%m-%d %H:%M:%S")
-                duration_seconds = max(0, int((finished - started).total_seconds()))
-            else:
-                duration_seconds = max(0, int((datetime.now() - started).total_seconds()))
-        except Exception:
-            duration_seconds = 0
-    data = redis_client.hgetall(task_stats_key(task_id))
-    if not data:
-        return {
-            "pages_crawled": 0,
-            "content_inserted": 0,
-            "content_updated": 0,
-            "comment_inserted": 0,
-            "comment_updated": 0,
-            "duration_seconds": duration_seconds,
-            "search_seconds": 0,
-            "full_text_seconds": 0,
-            "comments_seconds": 0,
-            "sleep_seconds": 0,
-        }
-    return {
-        "pages_crawled": int(data.get("pages_crawled", 0)),
-        "content_inserted": int(data.get("content_inserted", 0)),
-        "content_updated": int(data.get("content_updated", 0)),
-        "comment_inserted": int(data.get("comment_inserted", 0)),
-        "comment_updated": int(data.get("comment_updated", 0)),
-        "duration_seconds": duration_seconds,
-        "search_seconds": float(data.get("search_seconds", 0)),
-        "full_text_seconds": float(data.get("full_text_seconds", 0)),
-        "comments_seconds": float(data.get("comments_seconds", 0)),
-        "sleep_seconds": float(data.get("sleep_seconds", 0)),
+async def task_stats_route(task_id: int):
+    stats = {
+        "pages_crawled": 0,
+        "content_inserted": 0,
+        "content_updated": 0,
+        "comment_inserted": 0,
+        "comment_updated": 0,
+        "items_count": 0,
+        "duration_seconds": 0,
+        "search_seconds": 0,
+        "full_text_seconds": 0,
+        "comments_seconds": 0,
+        "sleep_seconds": 0,
     }
+    stats.update(_get_task_stats_from_mysql(str(task_id)))
+    stats.update(_get_task_stats_from_redis(str(task_id)))
+    return stats
 
+@router.get("/proxies")
+async def list_proxies_route(): return list_proxies()
 
-@router.get("/tasks/{task_id}/data")
-async def task_data(task_id: int, limit: int = 50, offset: int = 0):
-    key = task_data_key(task_id)
-    total = redis_client.llen(key)
-    if total == 0:
-        return {"total": 0, "items": []}
+@router.post("/proxies")
+async def add_proxy_route(request: Request):
+    data = await request.json()
+    if data.get("proxies"): add_proxies(data.get("proxies"))
+    elif data.get("proxy"): add_proxy(data.get("proxy"))
+    return {"success": True, "proxies": list_proxies()}
 
-    start = max(0, offset)
-    end = min(total - 1, start + max(0, limit) - 1)
-    raw = redis_client.lrange(key, start, end)
-    items = []
-    for line in raw:
-        try:
-            items.append(json.loads(line))
-        except Exception:
-            items.append({"raw": line})
-    return {"total": total, "items": items}
-
-
-@router.get("/tasks/{task_id}/comments")
-async def task_comments(task_id: int, limit: int = 50, offset: int = 0):
-    key = f"{os.getenv('REDIS_TASK_COMMENTS_PREFIX', 'weibo:task:comments:')}{task_id}"
-    total = redis_client.llen(key)
-    if total == 0:
-        return {"total": 0, "items": []}
-
-    start = max(0, offset)
-    end = min(total - 1, start + max(0, limit) - 1)
-    raw = redis_client.lrange(key, start, end)
-    items = []
-    for line in raw:
-        try:
-            items.append(json.loads(line))
-        except Exception:
-            items.append({"raw": line})
-    return {"total": total, "items": items}
-
+@router.delete("/proxies")
+async def delete_proxy_route(proxy: str):
+    delete_proxy(proxy); return {"success": True, "proxies": list_proxies()}
 
 @router.get("/sentiment/words")
-async def list_sentiment_word_group(word_type: str = ""):
-    mapping = {
-        "positive": "positive",
-        "negative": "negative",
-        "negation": "negation",
-        "degree": "degree",
-        "stopwords": "stopwords",
-    }
-
+async def list_sentiment_word_group_route(word_type: str = ""):
+    types = ["positive", "negative", "negation", "degree", "stopwords"]
     if word_type:
-        if word_type not in mapping:
-            return JSONResponse({"error": "invalid_type"}, status_code=400)
+        if word_type not in types: return JSONResponse({"error": "invalid"}, status_code=400)
         return list_sentiment_words(word_type)
-
-    data = {key: list_sentiment_words(key) for key in mapping}
-    return data
-
+    return {t: list_sentiment_words(t) for t in types}
 
 @router.post("/sentiment/words")
-async def add_sentiment(request: Request):
+async def add_sentiment_route(request: Request):
     data = await request.json()
-    word_type = data.get("type")
-    word = (data.get("word") or "").strip()
-    words = data.get("words")
-    if not word_type or (not word and not words):
-        return JSONResponse({"error": "invalid_payload"}, status_code=400)
-    if word_type not in ("positive", "negative", "negation", "degree", "stopwords"):
-        return JSONResponse({"error": "invalid_type"}, status_code=400)
-    if words:
-        add_sentiment_words(word_type, words)
-    else:
-        add_sentiment_word(word_type, word)
+    w_type, word, words = data.get("type"), data.get("word"), data.get("words")
+    if not w_type or (not word and not words): return JSONResponse({"error": "invalid"}, status_code=400)
+    if words: add_sentiment_words(w_type, words)
+    else: add_sentiment_word(w_type, word)
     return {"success": True}
-
 
 @router.delete("/sentiment/words")
-async def delete_sentiment(word_type: str, word: str):
-    if not word_type or not word:
-        return JSONResponse({"error": "invalid_payload"}, status_code=400)
-    if word_type not in ("positive", "negative", "negation", "degree", "stopwords"):
-        return JSONResponse({"error": "invalid_type"}, status_code=400)
-    remove_sentiment_word(word_type, word)
+async def delete_sentiment_route(word_type: str, word: str):
+    remove_sentiment_word(word_type, word); return {"success": True}
+
+@router.get("/webhook/config")
+async def get_webhook_config_route():
+    config = get_webhook_config()
+    return {"success": True, "config": config}
+
+@router.post("/webhook/config")
+@router.put("/webhook/config")
+async def save_webhook_config_route(request: Request):
+    data = await request.json()
+    save_webhook_config(data.get("webhook_url"), data.get("enabled", True), data.get("message_template"),
+                        data.get("timeout", 10), data.get("custom_headers"))
     return {"success": True}
 
-
-@router.get("/monitor/tasks")
-async def list_monitor_tasks(
-    ms_types: str = "11", page: int = 1, page_size: int = 50, keyword: str = ""
-):
-    if not monitor_engine:
-        app_logger.warning("monitor mysql disabled")
-        return JSONResponse({"error": "monitor_mysql_disabled"}, status_code=400)
-
-    ms_type_list = ms_types.split(",")
-    page = max(page, 1)
-    page_size = min(max(page_size, 1), 200)
-    offset = (page - 1) * page_size
-
-    keyword = (keyword or "").strip()
-    where_clause = "where ms_type in :types"
-    if keyword:
-        where_clause += " and (ms_keys like :kw or ms_start_url like :kw)"
-
-    sql = text(
-        f"""
-        select ms_id, ms_type, ms_keys, ms_start_url, ms_status, ms_remark,
-               ms_create_date, ms_modify_date, valid_start_date, valid_end_date,
-               industry, institution_name
-        from web_monitorspider
-        {where_clause}
-        order by ms_modify_date desc
-        limit :limit offset :offset
-        """
-    )
-    count_sql = text(
-        f"select count(*) as total from web_monitorspider {where_clause}"
-    )
-
-    try:
-        params = {"types": tuple(ms_type_list), "limit": page_size, "offset": offset}
-        if keyword:
-            params["kw"] = f"%{keyword}%"
-        with monitor_engine.connect() as conn:
-            total = conn.execute(count_sql, params).scalar() or 0
-            rows = conn.execute(sql, params).mappings()
-            tasks = [dict(row) for row in rows]
-    except Exception as exc:
-        app_logger.error("monitor mysql query failed: %s", exc)
-        return JSONResponse(
-            {"error": "monitor_mysql_unavailable", "message": str(exc)}, status_code=500
-        )
-
-    return {"total": total, "page": page, "page_size": page_size, "tasks": tasks}
-
-
-@router.post("/monitor/tasks/{ms_id}/status")
-async def update_monitor_task_status(ms_id: int, request: Request):
-    if not monitor_engine:
-        app_logger.warning("monitor mysql disabled")
-        return JSONResponse({"error": "monitor_mysql_disabled"}, status_code=400)
-
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "invalid_json"}, status_code=400)
-
-    status = payload.get("status")
-    try:
-        status_value = int(status)
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "invalid_status"}, status_code=400)
-
-    if status_value not in (0, 1):
-        return JSONResponse({"error": "invalid_status"}, status_code=400)
-
-    sql = text(
-        """
-        update web_monitorspider
-        set ms_status = :status, ms_modify_date = now()
-        where ms_id = :ms_id
-        """
-    )
-    try:
-        with monitor_engine.begin() as conn:
-            result = conn.execute(sql, {"status": status_value, "ms_id": ms_id})
-    except Exception as exc:
-        app_logger.error("monitor mysql update failed: %s", exc)
-        return JSONResponse(
-            {"error": "monitor_mysql_unavailable", "message": str(exc)}, status_code=500
-        )
-
-    if result.rowcount == 0:
-        return JSONResponse({"error": "task_not_found"}, status_code=404)
-
-    return {"success": True, "ms_id": ms_id, "status": status_value}
-
-
-@router.post("/monitor/tasks/stop_all")
-async def stop_all_monitor_tasks(request: Request):
-    if not monitor_engine:
-        app_logger.warning("monitor mysql disabled")
-        return JSONResponse({"error": "monitor_mysql_disabled"}, status_code=400)
-
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError:
-        payload = {}
-
-    ms_types = payload.get("ms_types", "11")
-    keyword = (payload.get("keyword") or "").strip()
-    ms_type_list = str(ms_types).split(",") if ms_types else []
-    if not ms_type_list:
-        return JSONResponse({"error": "invalid_types"}, status_code=400)
-
-    where_clause = "where ms_type in :types"
-    params = {"types": tuple(ms_type_list)}
-    if keyword:
-        where_clause += " and (ms_keys like :kw or ms_start_url like :kw)"
-        params["kw"] = f"%{keyword}%"
-
-    sql = text(
-        f"""
-        update web_monitorspider
-        set ms_status = 0, ms_modify_date = now()
-        {where_clause}
-        """
-    )
-    try:
-        with monitor_engine.begin() as conn:
-            result = conn.execute(sql, params)
-    except Exception as exc:
-        app_logger.error("monitor mysql bulk update failed: %s", exc)
-        return JSONResponse(
-            {"error": "monitor_mysql_unavailable", "message": str(exc)}, status_code=500
-        )
-
-    return {"success": True, "updated": result.rowcount or 0}
-
-
-@router.post("/monitor/tasks/{ms_id}/enqueue")
-async def enqueue_monitor_task(ms_id: int):
-    if not monitor_engine:
-        app_logger.warning("monitor mysql disabled")
-        return JSONResponse({"error": "monitor_mysql_disabled"}, status_code=400)
-
-    sql = text(
-        """
-        select ms_id, ms_type, ms_keys, ms_start_url
-        from web_monitorspider
-        where ms_id = :ms_id
-        """
-    )
-    try:
-        with monitor_engine.connect() as conn:
-            row = conn.execute(sql, {"ms_id": ms_id}).mappings().first()
-            if not row:
-                return JSONResponse({"error": "task_not_found"}, status_code=404)
-    except Exception as exc:
-        app_logger.error("monitor mysql query failed: %s", exc)
-        return JSONResponse(
-            {"error": "monitor_mysql_unavailable", "message": str(exc)}, status_code=500
-        )
-
-    url = row.get("ms_start_url") or ""
-    if not url and row.get("ms_keys"):
-        keyword = row["ms_keys"]
-        url = (
-            "https://m.weibo.cn/api/container/getIndex?containerid=100103type%3D1%26q="
-            + keyword
-            + "&page_type=searchall"
-        )
-    if not url:
-        return JSONResponse({"error": "empty_start_url"}, status_code=400)
-
-    task_id = redis_client.incr(TASK_ID_KEY)
-    keyword = row.get("ms_keys") or extract_keyword_from_url(url) or ""
-    new_task = {
-        "id": task_id,
-        "keyword": keyword,
-        "max_pages": int(os.getenv("DEFAULT_MAX_PAGES", str(DEFAULT_PAGE_SIZE))),
-        "with_comments": 1 if os.getenv("MONITOR_DEFAULT_WITH_COMMENTS", "1") in ("1", "true", "True") else 0,
-        "status": "pending",
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "started_at": "",
-        "finished_at": "",
-        "items_count": 0,
-        "output_file": "",
-        "data_key": task_data_key(task_id),
-        "monitor_id": ms_id,
-        "source": "monitor",
-    }
-    save_task(new_task)
-
-    redis_key = os.getenv("MONITOR_REDIS_KEY", "weibo_spider:start_urls")
-    redis_client.lpush(redis_key, url)
-    app_logger.info("enqueue monitor task %s -> %s (task_id=%s)", ms_id, url, task_id)
-    start_info = start_task_spider(task_id, url, lock_id=ms_id)
-    task_status = "running" if start_info.get("started") else "pending"
-    update_task(
-        task_id,
-        {
-            "status": task_status,
-            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if task_status == "running"
-            else "",
-        },
-    )
-    append_task_log(task_id, f"已加入队列: {url}")
-    if start_info.get("started"):
-        append_task_log(task_id, "爬虫已启动")
-    elif start_info.get("reason") == "already_running":
-        append_task_log(task_id, "爬虫已在运行")
-    return {"success": True, "queued": url, "spider": start_info, "task_id": task_id}
-
-
-@router.get("/logs")
-async def read_logs(limit: int = 200):
-    if not os.path.exists(LOG_FILE):
-        return {"total": 0, "lines": []}
-    try:
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except Exception:
-        return {"total": 0, "lines": []}
-    total = len(lines)
-    start = max(0, total - max(0, limit))
-    return {"total": total, "lines": [l.rstrip() for l in lines[start:]]}
-
-
-# ========================================
-# 批量执行功能
-# ========================================
-
-def save_batch(batch):
-    """保存批次记录到 Redis"""
-    batch_id = batch["batch_id"]
-    key = batch_key(batch_id)
-    mapping = {k: str(v) for k, v in batch.items()}
-    # 将 task_ids 列表转换为 JSON 字符串
-    if "task_ids" in mapping and isinstance(batch["task_ids"], list):
-        mapping["task_ids"] = json.dumps(batch["task_ids"])
-    redis_client.hset(key, mapping=mapping)
-    if redis_client.sadd(BATCH_INDEX_SET, str(batch_id)):
-        redis_client.rpush(BATCH_INDEX_LIST, str(batch_id))
-
-
-def get_batch(batch_id):
-    """获取单个批次"""
-    data = redis_client.hgetall(batch_key(batch_id))
-    if not data:
-        return None
-    return normalize_batch(data)
-
-
-def normalize_batch(data):
-    """标准化批次数据"""
-    batch = dict(data)
-    batch["batch_id"] = int(batch["batch_id"])
-    batch["template_count"] = int(batch.get("template_count", 0))
-    batch["completed_count"] = int(batch.get("completed_count", 0))
-    batch["failed_count"] = int(batch.get("failed_count", 0))
-    # 解析 task_ids JSON 字符串
-    if "task_ids" in batch:
-        try:
-            batch["task_ids"] = json.loads(batch["task_ids"])
-        except:
-            batch["task_ids"] = []
-    return batch
-
-
-def update_batch(batch_id, updates):
-    """更新批次"""
-    key = batch_key(batch_id)
-    # 将 task_ids 列表转换为 JSON 字符串
-    if "task_ids" in updates and isinstance(updates["task_ids"], list):
-        updates["task_ids"] = json.dumps(updates["task_ids"])
-    redis_client.hset(key, mapping={k: str(v) for k, v in updates.items()})
-
-
-def list_batches(limit=50):
-    """获取批次列表"""
-    batch_ids = redis_client.lrange(BATCH_INDEX_LIST, 0, -1)
-    batches = []
-    for bid in batch_ids[:limit]:
-        batch = get_batch(int(bid))
-        if batch:
-            batches.append(batch)
-    # 按 batch_id 降序排序（最新的在前面）
-    batches.sort(key=lambda x: x["batch_id"], reverse=True)
-    return batches
-
-
-def append_batch_log(batch_id, message):
-    """添加批次日志"""
-    if message is None:
-        return
-    key = batch_log_key(batch_id)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    redis_client.rpush(key, f"[{timestamp}] {message}")
-
-
-def update_batch_progress(batch_id, task_status):
-    """更新批次进度"""
-    batch = get_batch(batch_id)
-    if not batch:
-        return
-    
-    updates = {}
-    if task_status == "completed":
-        updates["completed_count"] = batch["completed_count"] + 1
-    elif task_status in ["failed", "stopped"]:
-        updates["failed_count"] = batch["failed_count"] + 1
-    
-    if updates:
-        update_batch(batch_id, updates)
-
-
-def _execute_batch_sync(batch_id, monitor_tasks):
-    """同步执行批量任务（在后台线程中运行）"""
-    import time
-
-    # 更新批次状态为 running
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    update_batch(batch_id, {"status": "running", "started_at": now})
-    append_batch_log(batch_id, f"开始批量执行，共 {len(monitor_tasks)} 个监控任务")
-
-    task_ids = []
-
-    try:
-        for idx, monitor_task in enumerate(monitor_tasks, 1):
-            ms_id = monitor_task["ms_id"]
-            keyword = monitor_task.get("ms_keys") or extract_keyword_from_url(monitor_task.get("ms_start_url") or "")
-
-            append_batch_log(batch_id, f"[{idx}/{len(monitor_tasks)}] 开始执行监控任务 #{ms_id}: {keyword}")
-
-            # 创建任务实例
-            task_id = redis_client.incr(TASK_ID_KEY)
-            max_pages = int(os.getenv("DEFAULT_MAX_PAGES", str(DEFAULT_PAGE_SIZE)))
-            with_comments = os.getenv("MONITOR_DEFAULT_WITH_COMMENTS", "1") in ("1", "true", "True")
-
-            new_task = {
-                "id": task_id,
-                "keyword": keyword,
-                "max_pages": max_pages,
-                "with_comments": 1 if with_comments else 0,
-                "status": "pending",
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "started_at": "",
-                "finished_at": "",
-                "items_count": 0,
-                "output_file": "",
-                "data_key": task_data_key(task_id),
-                "monitor_id": ms_id,
-                "batch_id": batch_id,
-                "source": "batch",
-            }
-            save_task(new_task)
-            task_ids.append(task_id)
-
-            # 更新批次的 task_ids
-            update_batch(batch_id, {"task_ids": task_ids})
-
-            # 启动任务
-            append_batch_log(batch_id, f"启动任务 ID: {task_id}")
-            start_task(task_id, keyword, max_pages)
-
-            # 轮询等待任务完成（timeout: 1小时）
-            max_wait = 720  # 720 * 5s = 1 小时
-            for i in range(max_wait):
-                task = get_task(task_id)
-                if task and task["status"] in ["completed", "failed", "stopped"]:
-                    append_batch_log(batch_id, f"任务 {task_id} 完成，状态: {task['status']}, 数据量: {task.get('items_count', 0)}")
-                    break
-                time.sleep(5)
-            else:
-                # 超时
-                append_batch_log(batch_id, f"任务 {task_id} 执行超时")
-
-            # 更新批次进度
-            task = get_task(task_id)
-            if task:
-                update_batch_progress(batch_id, task["status"])
-
-        # 所有任务完成
-        update_batch(batch_id, {
-            "status": "completed",
-            "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
-        append_batch_log(batch_id, "批量执行完成")
-
-    except Exception as e:
-        # 执行失败
-        update_batch(batch_id, {
-            "status": "failed",
-            "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
-        append_batch_log(batch_id, f"批量执行失败: {str(e)}")
-        app_logger.error(f"批量执行失败 (batch_id={batch_id}): {e}", exc_info=True)
-
-
-async def execute_batch(monitor_task_ids=None, trigger_type="manual", ms_types="11"):
-    """执行批量任务 - 从任务中心读取已启用的监控任务"""
-    if not monitor_engine:
-        return {"success": False, "error": "monitor_mysql_disabled", "message": "任务中心数据库未配置"}
-
-    # 获取要执行的监控任务
-    try:
-        if monitor_task_ids:
-            # 执行指定的监控任务
-            placeholders = ",".join([":id" + str(i) for i in range(len(monitor_task_ids))])
-            sql = text(f"""
-                select ms_id, ms_type, ms_keys, ms_start_url, ms_status
-                from web_monitorspider
-                where ms_id in ({placeholders}) and ms_status = 1
-            """)
-            params = {f"id{i}": tid for i, tid in enumerate(monitor_task_ids)}
-        else:
-            # 执行所有已启用的监控任务
-            ms_type_list = ms_types.split(",")
-            sql = text("""
-                select ms_id, ms_type, ms_keys, ms_start_url, ms_status
-                from web_monitorspider
-                where ms_type in :types and ms_status = 1
-                order by ms_modify_date desc
-            """)
-            params = {"types": tuple(ms_type_list)}
-
-        with monitor_engine.connect() as conn:
-            rows = conn.execute(sql, params).mappings()
-            monitor_tasks = [dict(row) for row in rows]
-
-    except Exception as exc:
-        app_logger.error("查询监控任务失败: %s", exc)
-        return {"success": False, "error": "query_failed", "message": str(exc)}
-
-    if not monitor_tasks:
-        return {"success": False, "error": "no_enabled_tasks", "message": "没有已启用的监控任务"}
-
-    # 创建批次记录
-    batch_id = redis_client.incr(BATCH_ID_KEY)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    batch = {
-        "batch_id": batch_id,
-        "status": "pending",
-        "started_at": "",
-        "finished_at": "",
-        "template_count": len(monitor_tasks),  # 保持字段名兼容性
-        "completed_count": 0,
-        "failed_count": 0,
-        "task_ids": [],
-        "trigger_type": trigger_type,
-        "created_at": now,
-    }
-
-    save_batch(batch)
-    append_batch_log(batch_id, f"创建批次，准备执行 {len(monitor_tasks)} 个监控任务")
-
-    # 在后台线程中执行
-    threading.Thread(target=_execute_batch_sync, args=(batch_id, monitor_tasks), daemon=True).start()
-
-    return {"success": True, "batch_id": batch_id, "task_count": len(monitor_tasks)}
-
-
-@router.post("/batch/execute")
-async def batch_execute_route(request: Request):
-    """手动触发批量执行 - 执行任务中心的已启用监控任务"""
+@router.post("/webhook/test")
+async def test_webhook_route(request: Request):
     data = await request.json()
-    monitor_task_ids = data.get("monitor_task_ids")  # 可选：指定要执行的监控任务 ID 列表
-    ms_types = data.get("ms_types", "11")  # 默认执行类型 11 的任务
-    result = await execute_batch(monitor_task_ids, trigger_type="manual", ms_types=ms_types)
-    return result
 
+    # 从配置中读取 webhook URL
+    config = get_webhook_config()
+    webhook_url = config.get("webhook_url")
 
-@router.get("/batches")
-async def get_batches(limit: int = 50):
-    """获取批量执行历史"""
-    batches = list_batches(limit=limit)
-    return {"success": True, "batches": batches, "total": len(batches)}
+    if not webhook_url:
+        return JSONResponse({"error": "webhook_url_not_configured", "message": "请先配置 Webhook URL"}, status_code=400)
 
+    # 获取测试参数
+    cookie_name = data.get("cookie_name", "test_cookie")
+    status = data.get("status", "expired")
+    reason = data.get("reason", "测试通知")
 
-@router.get("/batches/{batch_id}")
-async def get_batch_detail(batch_id: int):
-    """获取批次详情"""
-    batch = get_batch(batch_id)
-    if not batch:
-        return JSONResponse({"success": False, "error": "batch_not_found"}, status_code=404)
-    return {"success": True, "batch": batch}
+    # 构造测试消息
+    try:
+        import httpx
 
+        # 使用配置的消息模板或默认模板
+        message_template = config.get("message_template", "")
+        if message_template:
+            try:
+                # 尝试解析并使用配置的模板
+                template_obj = json.loads(message_template)
+                # 替换模板中的变量
+                template_str = json.dumps(template_obj)
+                template_str = template_str.replace("{cookie_name}", cookie_name)
+                template_str = template_str.replace("{status}", status)
+                template_str = template_str.replace("{reason}", reason)
+                template_str = template_str.replace("{timestamp}", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                test_payload = json.loads(template_str)
+            except:
+                # 模板解析失败，使用默认模板
+                test_payload = {
+                    "msgtype": "markdown",
+                    "markdown": {
+                        "content": f"## Webhook 测试\n\n> Cookie 名称: {cookie_name}\n> 状态: {status}\n> 原因: {reason}\n> 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    }
+                }
+        else:
+            # 使用默认模板
+            test_payload = {
+                "msgtype": "markdown",
+                "markdown": {
+                    "content": f"## Webhook 测试\n\n> Cookie 名称: {cookie_name}\n> 状态: {status}\n> 原因: {reason}\n> 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                }
+            }
 
-@router.get("/batches/{batch_id}/logs")
-async def get_batch_logs(batch_id: int):
-    """获取批次日志"""
-    logs = redis_client.lrange(batch_log_key(batch_id), 0, -1)
-    return {"success": True, "logs": logs, "total": len(logs)}
-
-
-@router.post("/batches/{batch_id}/stop")
-async def stop_batch_route(batch_id: int):
-    """停止批量执行"""
-    batch = get_batch(batch_id)
-    if not batch:
-        return JSONResponse({"success": False, "error": "batch_not_found"}, status_code=404)
-    
-    if batch["status"] != "running":
-        return JSONResponse({"success": False, "error": "not_running"}, status_code=400)
-    
-    # 停止所有关联的任务
-    task_ids = batch.get("task_ids", [])
-    stopped_count = 0
-    
-    for task_id in task_ids:
-        task = get_task(task_id)
-        if task and task["status"] == "running":
-            pid = task.get("pid")
-            if pid:
-                ok, reason = stop_task(task_id, pid)
-                if ok:
-                    stopped_count += 1
-    
-    # 更新批次状态
-    update_batch(batch_id, {
-        "status": "stopped",
-        "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
-    append_batch_log(batch_id, f"批次已停止，共停止 {stopped_count} 个任务")
-    
-    return {"success": True, "stopped_count": stopped_count}
-
-
-# ========================================
-# 定时任务功能
-# ========================================
-
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-
-_scheduler = None
-
-
-def init_scheduler():
-    """初始化调度器（在 FastAPI 启动时调用）"""
-    global _scheduler
-    if _scheduler is not None:
-        return
-    
-    _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
-    _scheduler.start()
-    app_logger.info("APScheduler 调度器已启动")
-    
-    # 加载定时配置
-    reload_schedule()
-
-
-def reload_schedule():
-    """加载定时配置并创建调度任务"""
-    global _scheduler
-    if _scheduler is None:
-        return
-    
-    config = get_schedule_config()
-    
-    # 移除旧的调度任务
-    if _scheduler.get_job("weibo_batch_execute"):
-        _scheduler.remove_job("weibo_batch_execute")
-    
-    if config.get("enabled"):
+        # 发送测试消息
+        timeout = int(config.get("timeout", 10))
+        custom_headers = {}
         try:
-            cron_expr = config["cron_expression"]
-            cron_parts = cron_expr.split()
-            
-            if len(cron_parts) != 5:
-                app_logger.error(f"无效的 cron 表达式: {cron_expr}")
-                return
-            
-            _scheduler.add_job(
-                scheduled_batch_execute,
-                trigger=CronTrigger(
-                    minute=cron_parts[0],
-                    hour=cron_parts[1],
-                    day=cron_parts[2],
-                    month=cron_parts[3],
-                    day_of_week=cron_parts[4],
-                    timezone="Asia/Shanghai"
-                ),
-                id="weibo_batch_execute",
-                replace_existing=True
-            )
-            app_logger.info(f"定时任务已设置: {cron_expr}")
-        except Exception as e:
-            app_logger.error(f"设置定时任务失败: {e}", exc_info=True)
+            custom_headers_str = config.get("custom_headers", "{}")
+            custom_headers = json.loads(custom_headers_str) if custom_headers_str else {}
+        except:
+            pass
 
+        headers = {"Content-Type": "application/json"}
+        headers.update(custom_headers)
 
-def scheduled_batch_execute():
-    """定时任务触发函数"""
-    # 分布式锁防止重复执行
-    if not redis_client.set(SCHEDULE_LOCK_KEY, "1", nx=True, ex=3600):
-        app_logger.warning("定时任务已在执行中，跳过本次触发")
-        return
-    
-    try:
-        app_logger.info("定时任务触发：开始批量执行")
-        import asyncio
-        asyncio.run(execute_batch(trigger_type="scheduled"))
-        
-        # 更新最后执行时间
-        update_schedule_config({"last_run_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        resp = httpx.post(webhook_url, json=test_payload, timeout=timeout, headers=headers)
+        if resp.status_code == 200:
+            return {"success": True, "message": "测试成功"}
+        else:
+            return JSONResponse({"error": f"HTTP {resp.status_code}", "message": f"Webhook 返回错误: {resp.status_code}"}, status_code=400)
     except Exception as e:
-        app_logger.error(f"定时任务执行失败: {e}", exc_info=True)
-    finally:
-        redis_client.delete(SCHEDULE_LOCK_KEY)
-
-
-def get_schedule_config():
-    """获取定时配置"""
-    data = redis_client.hgetall(SCHEDULE_CONFIG_KEY)
-    if not data:
-        # 返回默认配置
-        return {
-            "enabled": False,
-            "cron_expression": "0 0 * * *",  # 每天凌晨
-            "next_run_time": "",
-            "last_run_time": ""
-        }
-    
-    config = dict(data)
-    config["enabled"] = config.get("enabled", "0") == "1"
-    return config
-
-
-def update_schedule_config(updates):
-    """更新定时配置"""
-    # 转换 enabled 为字符串
-    if "enabled" in updates:
-        updates["enabled"] = "1" if updates["enabled"] else "0"
-    
-    redis_client.hset(SCHEDULE_CONFIG_KEY, mapping={k: str(v) for k, v in updates.items()})
-    
-    # 重新加载调度任务
-    if "cron_expression" in updates or "enabled" in updates:
-        reload_schedule()
-
-
-def validate_cron_expression(cron_expr):
-    """验证 cron 表达式"""
-    try:
-        parts = cron_expr.split()
-        if len(parts) != 5:
-            return False, "cron 表达式必须包含 5 个部分（分 时 日 月 周）"
-        
-        # 尝试创建 CronTrigger 来验证
-        CronTrigger(
-            minute=parts[0],
-            hour=parts[1],
-            day=parts[2],
-            month=parts[3],
-            day_of_week=parts[4]
-        )
-        return True, "cron 表达式有效"
-    except Exception as e:
-        return False, f"无效的 cron 表达式: {str(e)}"
-
+        return JSONResponse({"error": str(e), "message": f"发送失败: {str(e)}"}, status_code=400)
 
 @router.get("/schedule/config")
 async def get_schedule_config_route():
-    """获取定时配置"""
-    config = get_schedule_config()
-    return {"success": True, "config": config}
+    cfg = weibo_storage.get_config("weibo:schedule:config")
+    if not cfg:
+        cfg = {"enabled": False, "cron_expression": "0 */1 * * *"}
+    else:
+        # 转换 enabled 为布尔值
+        cfg["enabled"] = str(cfg.get("enabled", "0")) in ("1", "true", "True")
+    return {"success": True, "config": cfg}
 
-
+@router.post("/schedule/config")
 @router.put("/schedule/config")
-async def update_schedule_config_route(request: Request):
-    """更新定时配置"""
+async def save_schedule_config_route(request: Request):
     data = await request.json()
-    
-    updates = {}
-    if "enabled" in data:
-        updates["enabled"] = data["enabled"]
-    if "cron_expression" in data:
-        # 验证 cron 表达式
-        valid, message = validate_cron_expression(data["cron_expression"])
-        if not valid:
-            return JSONResponse({"success": False, "error": "invalid_cron", "message": message}, status_code=400)
-        updates["cron_expression"] = data["cron_expression"]
-    
-    if updates:
-        update_schedule_config(updates)
-    
-    return {"success": True, "config": get_schedule_config()}
+    weibo_storage.save_config("weibo:schedule:config", {
+        "enabled": "1" if data.get("enabled", False) else "0",
+        "cron_expression": data.get("cron_expression", "0 */1 * * *")
+    })
+    return {"success": True}
 
+@router.get("/cookie_check/schedule/config")
+async def get_cookie_check_schedule_config_route():
+    cfg = weibo_storage.get_config("weibo:cookie_check:schedule:config")
+    if not cfg:
+        cfg = {"enabled": False, "cron_expression": "0 */1 * * *"}
+    else:
+        # 转换 enabled 为布尔值
+        cfg["enabled"] = str(cfg.get("enabled", "0")) in ("1", "true", "True")
+    return {"success": True, "config": cfg}
 
-@router.post("/schedule/trigger")
-async def trigger_schedule_manually():
-    """手动触发定时任务（用于测试）"""
+@router.post("/cookie_check/schedule/config")
+@router.put("/cookie_check/schedule/config")
+async def save_cookie_check_schedule_config_route(request: Request):
+    data = await request.json()
+    weibo_storage.save_config("weibo:cookie_check:schedule:config", {
+        "enabled": "1" if data.get("enabled", False) else "0",
+        "cron_expression": data.get("cron_expression", "0 */1 * * *")
+    })
+    return {"success": True}
+
+@router.post("/cookie_check/schedule/trigger")
+async def trigger_cookie_check_route():
+    """手动触发 Cookie 检查"""
+    # TODO: 实现 Cookie 检查逻辑
+    return {"success": True, "message": "Cookie 检查已触发"}
+
+# Batch Management Routes
+@router.get("/batches")
+async def list_batches_route(limit: int = 50):
+    """获取批次列表"""
+    batches = weibo_storage.list_batches(limit)
+    return {"success": True, "batches": batches}
+
+@router.post("/batch/execute")
+async def execute_batch_route(request: Request):
+    """批量执行监控任务"""
+    data = await request.json()
+    ms_types = data.get("ms_types", "11")
+
+    # 创建新批次
+    batch_id = weibo_storage.get_next_id(BATCH_ID_KEY)
+    batch_data = {
+        "batch_id": batch_id,
+        "name": f"批次执行 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "status": "pending",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "task_ids": [],
+        "template_count": 0,
+        "completed_count": 0,
+        "failed_count": 0
+    }
+    weibo_storage.save_batch(batch_data)
+
+    # 启动后台任务处理批次
+    def _execute_batch():
+        try:
+            weibo_storage.append_batch_log(batch_id, f"开始执行批次任务，类型: {ms_types}")
+
+            # 获取监控任务列表
+            if not monitor_engine:
+                weibo_storage.append_batch_log(batch_id, "错误: 监控数据库未启用")
+                update_batch(batch_id, {"status": "failed"})
+                return
+
+            ms_type_list = ms_types.split(",")
+            sql = text(f"select * from web_monitorspider where ms_type in :types and ms_status = 1 order by ms_id")
+
+            with monitor_engine.connect() as conn:
+                rows = conn.execute(sql, {"types": tuple(ms_type_list)}).mappings().fetchall()
+                tasks = [dict(r) for r in rows]
+
+            weibo_storage.append_batch_log(batch_id, f"找到 {len(tasks)} 个待执行任务")
+            update_batch(batch_id, {
+                "template_count": len(tasks),
+                "status": "running"
+            })
+
+            task_ids = []
+            completed = 0
+            failed = 0
+
+            # 为每个监控任务创建爬取任务
+            for task in tasks:
+                try:
+                    keyword = extract_keyword_from_url(task.get("ms_start_url", ""))
+                    if not keyword:
+                        keyword = task.get("ms_keys", "Python")
+
+                    # 创建任务
+                    task_id = weibo_storage.get_next_id(TASK_ID_KEY)
+                    new_task = {
+                        "id": task_id,
+                        "keyword": keyword,
+                        "max_pages": DEFAULT_PAGE_SIZE,
+                        "with_comments": 1,
+                        "status": "pending",
+                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "items_count": 0,
+                        "pid": ""
+                    }
+                    save_task(new_task)
+                    task_ids.append(task_id)
+
+                    # 启动任务
+                    start_task(task_id, new_task["keyword"], new_task["max_pages"])
+                    weibo_storage.append_batch_log(batch_id, f"已创建任务 {task_id}: {keyword}")
+                    completed += 1
+
+                except Exception as e:
+                    weibo_storage.append_batch_log(batch_id, f"创建任务失败: {str(e)}")
+                    failed += 1
+
+            # 更新批次状态
+            update_batch(batch_id, {
+                "task_ids": task_ids,
+                "completed_count": completed,
+                "failed_count": failed,
+                "status": "completed"
+            })
+            weibo_storage.append_batch_log(batch_id, f"批次执行完成: 成功 {completed}, 失败 {failed}")
+
+        except Exception as exc:
+            weibo_storage.append_batch_log(batch_id, f"批次执行错误: {str(exc)}")
+            update_batch(batch_id, {"status": "failed"})
+
+    threading.Thread(target=_execute_batch, daemon=True).start()
+    return {"success": True, "batch_id": batch_id}
+
+@router.get("/batches/{batch_id}/logs")
+async def get_batch_logs_route(batch_id: int, limit: int = 200):
+    """获取批次日志"""
+    logs = weibo_storage.get_logs(f"batch_{batch_id}", limit)
+    return {"success": True, "logs": logs}
+
+@router.post("/batches/{batch_id}/stop")
+async def stop_batch_route(batch_id: int):
+    """停止批次及其关联的所有任务"""
+    db = weibo_storage._get_db()
     try:
-        result = await execute_batch(trigger_type="manual")
-        return result
+        from database.models import WebUIBatch
+        batch = db.query(WebUIBatch).filter(WebUIBatch.batch_id == str(batch_id)).first()
+        if not batch:
+            return JSONResponse({"error": "batch_not_found"}, status_code=404)
+
+        # 更新批次状态
+        batch.status = "stopped"
+        db.commit()
+        weibo_storage.append_batch_log(batch_id, "批次已手动停止")
+
+        # 获取批次关联的任务列表
+        stopped_count = 0
+        try:
+            task_ids = json.loads(batch.task_ids) if batch.task_ids else []
+
+            # 停止所有关联的任务
+            for task_id in task_ids:
+                task = get_task(task_id)
+                if task and task.get("status") == "running":
+                    pid = task.get("pid")
+                    if pid:
+                        success, _ = stop_task(task_id, pid)
+                        if success:
+                            stopped_count += 1
+        except Exception as e:
+            app_logger.error(f"停止批次任务失败: {e}")
+
+        return {"success": True, "stopped_count": stopped_count}
+    finally:
+        db.close()
+
+@router.get("/processes")
+async def list_processes_route():
+    """获取运行中的爬虫进程列表"""
+    tasks = weibo_storage.list_tasks()
+    running_tasks = [t for t in tasks if t.get("status") == "running"]
+
+    processes = []
+    for task in running_tasks:
+        task = _refresh_task_status(task)
+        if task.get("status") != "running":
+            continue
+
+        pid = task.get("pid")
+        process_info = {}
+
+        # 尝试获取进程信息
+        if pid and _is_process_alive(pid):
+            try:
+                import psutil
+                p = psutil.Process(int(pid))
+                # 获取运行时间
+                create_time = p.create_time()
+                import time
+                elapsed = int(time.time() - create_time)
+                hours = elapsed // 3600
+                minutes = (elapsed % 3600) // 60
+                seconds = elapsed % 60
+                etime = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+                # 获取命令
+                cmdline = " ".join(p.cmdline())
+
+                process_info = {
+                    "etime": etime,
+                    "command": cmdline
+                }
+            except:
+                pass
+
+        processes.append({
+            "task_id": task.get("id"),
+            "keyword": task.get("keyword"),
+            "status": task.get("status"),
+            "pid": pid,
+            "process": process_info
+        })
+
+    return processes
+
+@router.get("/logs")
+async def get_system_logs_route(limit: int = 300):
+    """获取系统日志（从日志文件中读取）"""
+    try:
+        log_lines = []
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                # 读取最后 N 行
+                all_lines = f.readlines()
+                log_lines = [line.rstrip() for line in all_lines[-limit:]]
+        return {"lines": log_lines, "total": len(log_lines)}
     except Exception as e:
-        app_logger.error(f"手动触发定时任务失败: {e}", exc_info=True)
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+        app_logger.error(f"读取系统日志失败: {e}")
+        return {"lines": [f"读取日志失败: {str(e)}"], "total": 0}
+
+# Monitor related (Sync with monitor engine)
+@router.get("/monitor/tasks")
+async def list_monitor_tasks(ms_types: str = "11", page: int = 1, page_size: int = 50, keyword: str = ""):
+    if not monitor_engine: return JSONResponse({"error": "monitor_mysql_disabled"}, status_code=400)
+    ms_type_list = ms_types.split(",")
+    offset = (max(page, 1) - 1) * page_size
+    keyword = (keyword or "").strip()
+    where = "where ms_type in :types"
+    if keyword: where += " and (ms_keys like :kw or ms_start_url like :kw)"
+    sql = text(f"select * from web_monitorspider {where} order by ms_modify_date desc limit :limit offset :offset")
+    count_sql = text(f"select count(*) from web_monitorspider {where}")
+    params = {"types": tuple(ms_type_list), "limit": page_size, "offset": offset}
+    if keyword: params["kw"] = f"%{keyword}%"
+    try:
+        with monitor_engine.connect() as conn:
+            total = conn.execute(count_sql, params).scalar() or 0
+            rows = conn.execute(sql, params).mappings()
+            return {"total": total, "page": page, "page_size": page_size, "tasks": [dict(r) for r in rows]}
+    except Exception as e: return JSONResponse({"error": str(e)}, status_code=500)
+
+@router.post("/monitor/tasks/{ms_id}/status")
+async def update_monitor_task_status(ms_id: int, request: Request):
+    if not monitor_engine: return JSONResponse({"error": "disabled"}, status_code=400)
+    data = await request.json()
+    status = int(data.get("status", 0))
+    sql = text("update web_monitorspider set ms_status = :status, ms_modify_date = now() where ms_id = :ms_id")
+    try:
+        with monitor_engine.begin() as conn:
+            conn.execute(sql, {"status": status, "ms_id": ms_id})
+        return {"success": True}
+    except Exception as e: return JSONResponse({"error": str(e)}, status_code=500)
+
+@router.post("/monitor/tasks/stop_all")
+async def stop_all_monitor_tasks_route(request: Request):
+    """停止所有监控任务"""
+    if not monitor_engine: return JSONResponse({"error": "disabled"}, status_code=400)
+
+    data = await request.json()
+    ms_types = data.get("ms_types", "11")
+    keyword = data.get("keyword", "").strip()
+
+    ms_type_list = ms_types.split(",")
+    where = "where ms_type in :types and ms_status = 1"
+    if keyword:
+        where += " and (ms_keys like :kw or ms_start_url like :kw)"
+
+    sql = text(f"update web_monitorspider set ms_status = 0, ms_modify_date = now() {where}")
+    params = {"types": tuple(ms_type_list)}
+    if keyword:
+        params["kw"] = f"%{keyword}%"
+
+    try:
+        with monitor_engine.begin() as conn:
+            result = conn.execute(sql, params)
+            updated = result.rowcount
+        return {"success": True, "updated": updated}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+def init_scheduler():
+    app_logger.info("Initializing Weibo Scheduler (MySQL Backend)")
+
+    # 初始化任务队列
+    init_task_queue()
+
+    # Schedule loading logic...
+    pass

@@ -33,6 +33,15 @@ from ._store_impl import *
 from .weibo_store_compat import WeiboCompatStoreImplement
 from tools.sentiment import senti_python
 
+# 批量写入优化（可选）
+try:
+    from ._store_batch_impl import WeiboBatchStoreImplement, WeiboBatchStoreWithCache
+    _BATCH_STORE_AVAILABLE = True
+except ImportError:
+    _BATCH_STORE_AVAILABLE = False
+    WeiboBatchStoreImplement = None
+    WeiboBatchStoreWithCache = None
+
 
 class WeibostoreFactory:
     STORES = {
@@ -45,11 +54,27 @@ class WeibostoreFactory:
         "excel": WeiboExcelStoreImplement,
     }
 
+    # 批量写入存储（性能优化）
+    if _BATCH_STORE_AVAILABLE:
+        STORES["db_batch"] = WeiboBatchStoreImplement
+        STORES["db_batch_cache"] = WeiboBatchStoreWithCache
+
     @staticmethod
     def create_store() -> AbstractStore:
         store_class = WeibostoreFactory.STORES.get(config.SAVE_DATA_OPTION)
         if not store_class:
             raise ValueError("[WeibotoreFactory.create_store] Invalid save option only supported csv or db or json or sqlite or mongodb or excel ...")
+
+        # 批量写入配置
+        if config.SAVE_DATA_OPTION in ["db_batch", "db_batch_cache"]:
+            batch_size = getattr(config, "BATCH_WRITE_SIZE", 100)
+            enable_cache = getattr(config, "ENABLE_COMMENT_CACHE", True)
+
+            if config.SAVE_DATA_OPTION == "db_batch_cache":
+                return store_class(batch_size=batch_size, enable_cache=enable_cache)
+            else:
+                return store_class(batch_size=batch_size)
+
         return store_class()
 
 

@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  mediacrawler:
+    build: .
+    container_name: mediacrawler
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - ENABLE_CDP_MODE=false
+      - CDP_HEADLESS=true
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./browser_data:/app/browser_data

@@ -7,7 +7,20 @@
       "Bash(curl:*)",
       "Bash(python3:*)",
       "Bash(redis-cli LRANGE:*)",
-      "Bash(uv add:*)"
+      "Bash(uv add:*)",
+      "Bash(redis-cli --scan:*)",
+      "Bash(redis-cli hgetall:*)",
+      "Bash(redis-cli smembers:*)",
+      "Bash(tee:*)",
+      "Bash(redis-cli scard:*)",
+      "Bash(redis-cli del:*)",
+      "Bash(redis-cli keys:*)",
+      "Bash(xargs:*)",
+      "Bash(ls:*)",
+      "Bash(pkill:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python:*)",
+      "Bash(chmod:*)"
     ]
   }
 }
