@@ -12,6 +12,7 @@ services:
       - ENABLE_CDP_MODE=false
       - CDP_HEADLESS=true
     volumes:
+      - ./:/app
       - ./data:/app/data
       - ./logs:/app/logs
       - ./browser_data:/app/browser_data
